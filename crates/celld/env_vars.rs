@@ -65,6 +65,7 @@ pub fn validate() -> anyhow::Result<()> {
         "CELLD_LTX_DURABILITY_TIMEOUT_SECS",
         "CELLD_MAX_LOADED_WORKERS",
         "CELLD_MAX_CELL_REQUESTS",
+        "CELLD_MAX_CELLS_PER_ISOLATE",
         "CELLD_MAX_OUTBOUND_WEBSOCKETS",
         "CELLD_MAX_REQUEST_BODY_BYTES",
         "CELLD_MAX_REQUESTS",
@@ -78,6 +79,7 @@ pub fn validate() -> anyhow::Result<()> {
         "CELLD_SHUTDOWN_DRAIN_MS",
         "CELLD_TOKIO_THREADS",
         "CELLD_TTL_MS",
+        "CELLD_TURN_BUDGET_S",
         "CELLD_WAKER_TICK_MS",
     ] {
         positive::<u64>(name)?;
