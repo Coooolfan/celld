@@ -517,7 +517,7 @@ pub fn pool_limits() -> celld_logic::isolate::PoolLimits {
         max_requests: env_usize("CELLD_MAX_REQUESTS"),
         // This is an engine blast-radius policy. The resident-cell and RSS
         // limits are the operator controls for node memory.
-        max_cells: MAX_CELLS_PER_ISOLATE,
+        max_cells: env_usize("CELLD_MAX_CELLS_PER_ISOLATE").unwrap_or(MAX_CELLS_PER_ISOLATE),
     }
 }
 
@@ -2863,12 +2863,17 @@ async fn drive_worker(
 ) {
     let mut ops = Ops::new();
 
-    let (begun, started) = slot.turn(|worker| worker.turn_begin(job, trace)).await;
+    let ((begun, started), cut) = slot
+        .turn_checked(|worker| worker.turn_begin(job, trace))
+        .await;
     // Nothing is in flight; the reply already carries the error.
     let Some(mut entry) = begun else {
         drop(started);
         return;
     };
+    if cut {
+        entry.turn_terminated(crate::pool::turn_budget());
+    }
     if entry.keeps_native_ops() {
         adopt(&mut ops, started);
     } else {
@@ -2878,10 +2883,14 @@ async fn drive_worker(
     after_turn(&entry);
 
     while !entry.finished() {
+        let mut cut = false;
         let started = match wake_with_cross_entry_gate(&mut ops, &mut entry, budget).await {
             Wake::Op(op, result) => {
-                slot.turn(|worker| worker.turn_deliver(&mut entry, op, result))
-                    .await
+                let (started, terminated) = slot
+                    .turn_checked(|worker| worker.turn_deliver(&mut entry, op, result))
+                    .await;
+                cut = terminated;
+                started
             }
             Wake::GatedReply(completion) => {
                 entry.finish_gated_reply(completion);
@@ -2896,8 +2905,8 @@ async fn drive_worker(
                 Vec::new()
             }
             Wake::Cancelled { shutdown } => {
-                let started = slot
-                    .turn(|worker| {
+                let (started, terminated) = slot
+                    .turn_checked(|worker| {
                         if shutdown {
                             worker.turn_cancel_for_shutdown(&mut entry)
                         } else {
@@ -2905,6 +2914,7 @@ async fn drive_worker(
                         }
                     })
                     .await;
+                cut = terminated;
                 entry.cancel_gated_reply();
                 started
             }
@@ -2917,11 +2927,26 @@ async fn drive_worker(
                 Vec::new()
             }
             Wake::PendingEventIdle => {
-                slot.turn(|worker| worker.turn_cancel_pending_events(&mut entry))
-                    .await
+                let (started, terminated) = slot
+                    .turn_checked(|worker| worker.turn_cancel_pending_events(&mut entry))
+                    .await;
+                cut = terminated;
+                started
             }
-            Wake::Poll => slot.turn(|worker| worker.turn_poll(&mut entry)).await,
+            Wake::Poll => {
+                let (started, terminated) = slot
+                    .turn_checked(|worker| worker.turn_poll(&mut entry))
+                    .await;
+                cut = terminated;
+                started
+            }
         };
+        // The terminated turn has released the isolate, so the outcome is settled:
+        // answer now instead of leaving the client to wait out the handler
+        // budget, which can be orders of magnitude larger than the turn's.
+        if cut {
+            entry.turn_terminated(crate::pool::turn_budget());
+        }
         if entry.keeps_native_ops() {
             adopt(&mut ops, started);
         } else {
@@ -3962,10 +3987,10 @@ async fn drive_cell_inner(
     // ticket cannot be missed by a release landing between the two. Only the
     // waiting happens out here, because a turn may not await.
     let mut pending = Some(job);
-    let (begun, started, moves) = loop {
+    let ((begun, started, moves), cut) = loop {
         let mut waiting = None;
-        let taken = slot
-            .turn_cell(&scope, |worker| {
+        let (taken, cut) = slot
+            .turn_cell_checked(&scope, |worker| {
                 let job = pending.take().expect("one job per attempt");
                 if let Some(open) = js::cell_gate_wait(job.scope()) {
                     waiting = Some(open);
@@ -3977,7 +4002,7 @@ async fn drive_cell_inner(
             })
             .await;
         match taken {
-            Some(taken) => break taken,
+            Some(taken) => break (taken, cut),
             None => match waiting {
                 None => {}
                 Some(open) => match open.await {
@@ -4010,6 +4035,9 @@ async fn drive_cell_inner(
         drop(started);
         return Ok(None);
     };
+    if cut {
+        entry.turn_terminated(crate::pool::turn_budget());
+    }
     if entry.keeps_native_ops() {
         #[cfg(celld_internal_tests)]
         adopt_cell_ops_for_test(&mut ops, started, &mut test_observers.native_op_dropped);
@@ -4028,14 +4056,18 @@ async fn drive_cell_inner(
     }
 
     while !entry.finished() {
+        let mut cut = false;
         let (started, moves) = match wake_with_cross_entry_gate(&mut ops, &mut entry, budget).await
         {
             Wake::Op(op, result) => {
-                slot.turn(|worker| {
-                    let started = worker.turn_deliver(&mut entry, op, result);
-                    (started, worker.take_alarm_moves())
-                })
-                .await
+                let (out, terminated) = slot
+                    .turn_checked(|worker| {
+                        let started = worker.turn_deliver(&mut entry, op, result);
+                        (started, worker.take_alarm_moves())
+                    })
+                    .await;
+                cut = terminated;
+                out
             }
             Wake::GatedReply(completion) => {
                 entry.finish_gated_reply(completion);
@@ -4050,8 +4082,8 @@ async fn drive_cell_inner(
                 (Vec::new(), Vec::new())
             }
             Wake::Cancelled { shutdown } => {
-                let cancelled = slot
-                    .turn(|worker| {
+                let (cancelled, terminated) = slot
+                    .turn_checked(|worker| {
                         let started = if shutdown {
                             worker.turn_cancel_for_shutdown(&mut entry)
                         } else {
@@ -4060,6 +4092,7 @@ async fn drive_cell_inner(
                         (started, worker.take_alarm_moves())
                     })
                     .await;
+                cut = terminated;
                 entry.cancel_gated_reply();
                 #[cfg(celld_internal_tests)]
                 notify_gated_failure_for_test(&mut entry, &mut test_observers.gated_failure);
@@ -4082,20 +4115,29 @@ async fn drive_cell_inner(
                 (Vec::new(), Vec::new())
             }
             Wake::PendingEventIdle => {
-                slot.turn(|worker| {
-                    let started = worker.turn_cancel_pending_events(&mut entry);
-                    (started, worker.take_alarm_moves())
-                })
-                .await
+                let (out, terminated) = slot
+                    .turn_checked(|worker| {
+                        let started = worker.turn_cancel_pending_events(&mut entry);
+                        (started, worker.take_alarm_moves())
+                    })
+                    .await;
+                cut = terminated;
+                out
             }
             Wake::Poll => {
-                slot.turn(|worker| {
-                    let started = worker.turn_poll(&mut entry);
-                    (started, worker.take_alarm_moves())
-                })
-                .await
+                let (out, terminated) = slot
+                    .turn_checked(|worker| {
+                        let started = worker.turn_poll(&mut entry);
+                        (started, worker.take_alarm_moves())
+                    })
+                    .await;
+                cut = terminated;
+                out
             }
         };
+        if cut {
+            entry.turn_terminated(crate::pool::turn_budget());
+        }
         #[cfg(celld_internal_tests)]
         if entry.gated_reply_and_io_context().0.is_some() {
             notify_gated_failure_for_test(&mut entry, &mut test_observers.gated_failure);

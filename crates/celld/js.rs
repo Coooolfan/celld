@@ -6050,6 +6050,21 @@ impl InFlight {
         self.fail(anyhow!("handler exceeded {}s budget", budget.as_secs()));
     }
 
+    /// The watchdog terminated this request's turn for holding the isolate
+    /// past the turn budget.
+    ///
+    /// Distinct from [`InFlight::time_out`]: the handler budget bounds a
+    /// request across its turns, while this fires the moment one turn is cut
+    /// short, so the client is not left waiting out the larger budget for an
+    /// answer that is already decided.
+    pub fn turn_terminated(&mut self, budget: Duration) {
+        self.fail(anyhow!(
+            "handler held the isolate for more than {}s and was terminated",
+            budget.as_secs()
+        ));
+        self.background = None;
+    }
+
     /// Nothing this request awaits can move it, so it will never settle on
     /// its own. Reachable when a handler awaits a promise only some *other*
     /// request could resolve — which the pump concealed, because it settled
@@ -6508,6 +6523,20 @@ impl Worker {
             physical: statistics.total_physical_size() as u64,
             external: statistics.external_memory() as u64,
         })
+    }
+
+    /// A handle to this worker's isolate, usable from another thread without
+    /// the lock.
+    ///
+    /// The watchdog needs it precisely when a turn has stopped yielding, and
+    /// at that moment the wedged turn holds the `Locker` that any other route
+    /// to the isolate would have to wait for. `SharedIsolate` hands the handle
+    /// out without that lock, which is the only reason a runaway turn can be
+    /// terminated at all.
+    pub fn isolate_handle(&self) -> Option<v8::IsolateHandle> {
+        self.inner
+            .as_ref()
+            .map(|inner| inner.isolate.thread_safe_handle())
     }
 
     /// Run a request's first turn.

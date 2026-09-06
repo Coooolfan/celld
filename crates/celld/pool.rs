@@ -158,6 +158,92 @@ impl Drop for QueueProducerPermit {
     }
 }
 
+/// A turn that is currently inside the isolate.
+///
+/// The budget measures wall time while the turn owns the isolate, including
+/// native calls and time descheduled by the OS. It is not CPU accounting.
+struct RunningTurn {
+    since: std::time::Instant,
+    lane: TurnLane,
+    /// The watchdog already fired for this turn. V8 clears the terminate flag
+    /// once the exception has propagated, so re-firing would land on whatever
+    /// runs next in this isolate — which is a different turn, and innocent.
+    terminated: bool,
+}
+
+/// Every live slot, for the watchdog to scan.
+///
+/// Slots reach it from both construction paths, because a loaded worker's
+/// standalone slot can wedge exactly like a pooled one. Entries are weak, so
+/// a retired slot leaves on its own and the registry never keeps an isolate
+/// alive past its pool.
+static SLOT_REGISTRY: Mutex<Vec<std::sync::Weak<Slot>>> = Mutex::new(Vec::new());
+
+fn register_slot(slot: &Arc<Slot>) {
+    let mut registry = SLOT_REGISTRY.lock().expect("slot registry poisoned");
+    registry.retain(|weak| weak.strong_count() > 0);
+    registry.push(Arc::downgrade(slot));
+}
+
+/// How long a single turn may hold its isolate before the watchdog terminates
+/// it. Defaults to the handler budget. This limits each synchronous turn;
+/// the handler budget separately limits the request across asynchronous waits.
+pub fn turn_budget() -> std::time::Duration {
+    crate::env_vars::positive::<u64>("CELLD_TURN_BUDGET_S")
+        .expect("validated CELLD_TURN_BUDGET_S")
+        .map(std::time::Duration::from_secs)
+        .unwrap_or_else(crate::js::handler_budget)
+}
+
+/// Terminate turns that have stopped yielding.
+///
+/// A wedged turn cannot be reached by the machinery that would normally end
+/// it: `drive` detects a budget overrun in `wake`, and a turn that never
+/// returns never lets its task reach `wake` again. So the deadline has to be
+/// watched from outside the task that is stuck.
+pub fn watch_turns() -> std::io::Result<TurnWatchdog> {
+    let budget = turn_budget();
+    let (stop, receiver) = std::sync::mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("celld-turn-watchdog".into())
+        .spawn(move || {
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                receiver.recv_timeout(std::time::Duration::from_millis(250))
+            {
+                let slots: Vec<Arc<Slot>> = {
+                    let mut registry = SLOT_REGISTRY.lock().expect("slot registry poisoned");
+                    registry.retain(|weak| weak.strong_count() > 0);
+                    registry
+                        .iter()
+                        .filter_map(std::sync::Weak::upgrade)
+                        .collect()
+                };
+                for slot in slots {
+                    slot.terminate_if_overrun(budget);
+                }
+            }
+        })?;
+    Ok(TurnWatchdog {
+        stop,
+        thread: Some(thread),
+    })
+}
+
+/// Stops and joins the dedicated watchdog when the node exits.
+pub struct TurnWatchdog {
+    stop: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for TurnWatchdog {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// One isolate, and everything the decision core needs to know about it.
 pub struct Slot {
     /// The index used only inside this pool's placement snapshot and slot
@@ -173,6 +259,12 @@ pub struct Slot {
     /// retiring slot is filtered out of every placement decision, so nothing
     /// can arrive afterwards. Entering one would be a bug in this module.
     worker: tokio::sync::Mutex<Option<js::Worker>>,
+    /// Reaches this isolate without the lock the wedged turn is holding.
+    /// Taken at construction because every later route runs through `worker`,
+    /// which is exactly what a runaway turn makes unavailable.
+    isolate_handle: Option<v8::IsolateHandle>,
+    /// The turn inside the isolate right now, if any.
+    running_turn: Mutex<Option<RunningTurn>>,
     turn_scheduler: TurnScheduler,
     queue_producers: Mutex<std::collections::HashMap<String, usize>>,
     turns: AtomicUsize,
@@ -208,6 +300,14 @@ impl Slot {
     /// isolate across an await is unwritable rather than a rule a comment
     /// asks callers to remember.
     pub async fn turn<T>(&self, f: impl FnOnce(&mut js::Worker) -> T) -> T {
+        self.turn_in(TurnLane::Stateless, f).await.0
+    }
+
+    /// As [`Slot::turn`], also reporting whether the watchdog terminated this
+    /// turn. The flag belongs to the turn that just ran rather than to the
+    /// slot: a latch on the slot would be read by whichever request reached it
+    /// first, which is not necessarily the one that was terminated.
+    pub async fn turn_checked<T>(&self, f: impl FnOnce(&mut js::Worker) -> T) -> (T, bool) {
         self.turn_in(TurnLane::Stateless, f).await
     }
 
@@ -215,10 +315,19 @@ impl Slot {
     /// cell can retain its next place, but it cannot take the next place from
     /// another cell that already waits on the same isolate.
     pub async fn turn_cell<T>(&self, scope: &str, f: impl FnOnce(&mut js::Worker) -> T) -> T {
+        self.turn_in(TurnLane::Cell(scope.to_string()), f).await.0
+    }
+
+    /// As [`Slot::turn_cell`], also reporting watchdog termination.
+    pub async fn turn_cell_checked<T>(
+        &self,
+        scope: &str,
+        f: impl FnOnce(&mut js::Worker) -> T,
+    ) -> (T, bool) {
         self.turn_in(TurnLane::Cell(scope.to_string()), f).await
     }
 
-    async fn turn_in<T>(&self, lane: TurnLane, f: impl FnOnce(&mut js::Worker) -> T) -> T {
+    async fn turn_in<T>(&self, lane: TurnLane, f: impl FnOnce(&mut js::Worker) -> T) -> (T, bool) {
         struct Counted<'a>(&'a Slot);
         impl Drop for Counted<'_> {
             fn drop(&mut self) {
@@ -234,11 +343,80 @@ impl Slot {
             None => panic!("entered isolate {} after it was freed", self.id),
         };
         #[cfg(celld_internal_tests)]
-        self.turn_observations.lock().unwrap().push(match lane {
-            TurnLane::Stateless => "stateless".to_string(),
-            TurnLane::Cell(scope) => scope,
+        self.turn_observations
+            .lock()
+            .unwrap()
+            .push(match lane.clone() {
+                TurnLane::Stateless => "stateless".to_string(),
+                TurnLane::Cell(scope) => scope,
+            });
+        // The clock starts here rather than at `acquire`: time spent waiting
+        // for the gate belongs to whoever held it, and charging it twice would
+        // terminate a turn that had barely begun.
+        //
+        // Clearing runs from a guard so a panic in `f` cannot leave the entry
+        // behind: the watchdog would read it as a turn still running and
+        // terminate whatever entered this isolate next, which is innocent.
+        let terminated = std::cell::Cell::new(false);
+        struct Running<'a>(&'a Slot, &'a std::cell::Cell<bool>);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                let mut running = self.0.running_turn.lock().expect("running turn poisoned");
+                let turn = running.take();
+                // A timeout may race with the final return from V8. Clear
+                // its flag before releasing the worker gate, even if V8 did
+                // not observe the interrupt during this turn.
+                if turn.as_ref().is_some_and(|turn| turn.terminated) {
+                    if let Some(handle) = &self.0.isolate_handle {
+                        handle.cancel_terminate_execution();
+                    }
+                }
+                self.1.set(turn.is_some_and(|turn| turn.terminated));
+            }
+        }
+        *self.running_turn.lock().expect("running turn poisoned") = Some(RunningTurn {
+            since: std::time::Instant::now(),
+            lane,
+            terminated: false,
         });
-        f(worker)
+        let running = Running(self, &terminated);
+        let out = f(worker);
+        drop(running);
+        (out, terminated.get())
+    }
+
+    /// Terminate this isolate's current turn if it has outlived `budget`.
+    ///
+    /// Called only from the watchdog. Termination is isolate-wide rather than
+    /// turn-scoped. The running-turn mutex serializes termination with turn
+    /// cleanup, and the worker gate prevents the next turn entering before
+    /// cleanup has cleared any late termination flag.
+    fn terminate_if_overrun(&self, budget: std::time::Duration) {
+        let mut running = self.running_turn.lock().expect("running turn poisoned");
+        let Some(turn) = running.as_mut() else {
+            return;
+        };
+        if turn.terminated || turn.since.elapsed() < budget {
+            return;
+        }
+        let Some(handle) = self.isolate_handle.as_ref() else {
+            return;
+        };
+        turn.terminated = true;
+        let lane = match &turn.lane {
+            TurnLane::Stateless => "stateless".to_string(),
+            TurnLane::Cell(scope) => scope.clone(),
+        };
+        // False means the isolate was already destroyed, which the weak
+        // registry makes unlikely but not impossible.
+        let fired = handle.terminate_execution();
+        tracing::warn!(
+            isolate = self.id,
+            lane,
+            budget_s = budget.as_secs(),
+            fired,
+            "turn exceeded its budget; terminating JavaScript execution"
+        );
     }
 
     /// Reserve one event through its complete lifetime, including the reply
@@ -287,9 +465,12 @@ impl Slot {
     /// A dynamic Worker owns exactly one isolate, so it needs no
     /// admission, growth, or retirement policy.
     pub(crate) fn standalone(worker: js::Worker) -> Arc<Self> {
-        Arc::new(Slot {
+        let isolate_handle = worker.isolate_handle();
+        let slot = Arc::new(Slot {
             id: 0,
             heap_id: next_heap_id(),
+            isolate_handle,
+            running_turn: Mutex::new(None),
             worker: tokio::sync::Mutex::new(Some(worker)),
             turn_scheduler: TurnScheduler::default(),
             queue_producers: Mutex::new(std::collections::HashMap::new()),
@@ -301,7 +482,9 @@ impl Slot {
             retiring: AtomicBool::new(false),
             #[cfg(celld_internal_tests)]
             turn_observations: Mutex::new(Vec::new()),
-        })
+        });
+        register_slot(&slot);
+        slot
     }
 
     #[cfg(celld_internal_tests)]
@@ -314,6 +497,8 @@ impl Slot {
         Arc::new(Slot {
             id: 0,
             heap_id: HeapId::new(0),
+            isolate_handle: None,
+            running_turn: Mutex::new(None),
             worker: tokio::sync::Mutex::new(None),
             turn_scheduler: TurnScheduler::default(),
             queue_producers: Mutex::new(std::collections::HashMap::new()),
@@ -566,6 +751,8 @@ impl Pool {
         let slot = Arc::new(Slot {
             id,
             heap_id,
+            isolate_handle: worker.isolate_handle(),
+            running_turn: Mutex::new(None),
             worker: tokio::sync::Mutex::new(Some(worker)),
             turn_scheduler: TurnScheduler::default(),
             queue_producers: Mutex::new(std::collections::HashMap::new()),
@@ -578,6 +765,7 @@ impl Pool {
             #[cfg(celld_internal_tests)]
             turn_observations: Mutex::new(Vec::new()),
         });
+        register_slot(&slot);
         if let Some(id) = reusable {
             slots[id] = slot.clone();
         } else {
