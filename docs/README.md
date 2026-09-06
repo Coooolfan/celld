@@ -926,6 +926,12 @@ from the transport errors and the application failures.
 
 ## Environment variables
 
+同步 turn 超时由独立于 Tokio 的看门狗线程检测。超时后终止 V8 执行，尚未应答的
+请求返回错误，后续 turn 可以继续使用 isolate。该预算是墙钟时间，包含同步 native
+调用及被 OS 暂停调度的时间，不包含排队和异步等待。它不提供精确 CPU 计量，也不能
+打断尚未返回 V8 的阻塞 native 调用。终止不会回滚此前已经提交的 SQLite 写入；已经
+发出的 HTTP 响应也不能撤回。模块初始化中尚未注册到 Slot 的执行不在此看门狗范围内。
+
 For the full list, run `celld -h`. This table shows the primary settings:
 
 | variable | purpose |
@@ -951,6 +957,8 @@ For the full list, run `celld -h`. This table shows the primary settings:
 | `CELLD_DEPLOY_MAX_AGE_S` | How long a resident Durable Object can keep the previous deployment's code after an adoption before celld forces the move (default: 60; 0 forces at once) |
 | `CELLD_OPERATION_DEADLINE_MS` | The deadline for a non-restore operation (default: 15000) |
 | `CELLD_MAX_CELL_REQUESTS` | The concurrent fetch limit for one Durable Object or Queue broker (default: 64) |
+| `CELLD_MAX_CELLS_PER_ISOLATE` | 每个 isolate 最多承载的 cell 数量，默认 32；设为 1 可缩小同步执行阻塞的影响范围，但会增加内存占用 |
+| `CELLD_TURN_BUDGET_S` | 单次同步 turn 持有 isolate 的墙钟时间上限，正整数秒；默认沿用 handler budget（300 秒）。独立线程每 250ms 检查并终止超时的 V8 执行 |
 | `CELLD_MAX_REQUEST_BODY_BYTES` | The body limit for a public Worker request or a direct Durable Object request (default: 1 GiB) |
 | `CELLD_MAX_RESIDENT_CELLS` | The hard limit for resident cells, enforced at admission |
 | `CELLD_IDLE_EVICT_S` | The age in seconds after which an idle resident cell leaves memory and hibernates (unset: only pressure or the residency cap removes an idle cell) |

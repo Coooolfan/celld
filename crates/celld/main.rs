@@ -4364,6 +4364,12 @@ async fn async_main(telemetry_config: Option<celld::telemetry::Config>) -> anyho
         .detach();
     }
 
+    // A turn that stops yielding cannot be ended by the machinery that would
+    // normally end it: `drive` notices a budget overrun in `wake`, and a turn
+    // that never returns never lets its task reach `wake` again. Watch the
+    // deadline from a dedicated thread even when every Tokio worker is busy.
+    let _turn_watchdog = celld::pool::watch_turns()?;
+
     // The fleet-aware first-readiness gate: withhold the first health 200
     // until no donor is mid-handoff and every live peer publishes successor
     // capacity. CELLD_READY_FLEET_GATE_MS bounds the silent wait before celld
