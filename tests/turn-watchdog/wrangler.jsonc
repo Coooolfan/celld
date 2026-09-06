@@ -1,0 +1,8 @@
+{
+  "name": "watchdog-test",
+  "main": "src/index.js",
+  "compatibility_date": "2025-03-01",
+  "durable_objects": {
+    "bindings": [{ "name": "CELL", "class_name": "TestCell" }]
+  }
+}
