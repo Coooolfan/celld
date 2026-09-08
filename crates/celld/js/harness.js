@@ -1567,6 +1567,7 @@ class DurableObjectStorage {
   _transactionStatus() {
     let status = null;
     for (let control = this._transactionControl; control; control = control.parent) {
+      if (control.terminated[0]) return "terminated";
       if (control.rolledBack) return "rolled back";
       if (control.committed) status = "committed";
     }
@@ -1752,17 +1753,9 @@ class DurableObjectStorage {
     this._assertTransactionActive("transactionSync");
     const root = this._transactionRoot;
     if (this._transactionDepth === 0) {
-      // A callback can call a helper that reaches the root `ctx.storage`
-      // handle instead of the transaction view, and the helper starts its own
-      // synchronous transaction. Workerd nests that one under the open
-      // transaction; celld attempted a second top-level BEGIN and failed with
-      // "cannot start a transaction within a transaction"
-      // (denoland/celld#226). The open view takes the call instead, so it
-      // becomes a savepoint: an inner rollback then discards only the inner
-      // writes, and an outer rollback discards both layers.
-      //
-      // The synchronous transaction is preferred over an asynchronous one,
-      // because it is the innermost open layer whenever both are open.
+      // 硬终止跳过 finally；原生标记使遗留的同步事务视图失效。
+      if (root._activeSyncTransaction?._transactionControl.terminated[0])
+        root._activeSyncTransaction = null;
       if (root._activeSyncTransaction !== null)
         return root._activeSyncTransaction.transactionSync(f);
       const owner = String(__io_context_id());
@@ -1770,38 +1763,39 @@ class DurableObjectStorage {
           root._activeTransaction !== null)
         return root._activeTransaction.transactionSync(f);
     }
-    const savepoint = this._transactionStart();
+    const savepoint = "cells_tx_" + (++root._transactionSerial);
     const control = this._newTransactionControl(savepoint);
     const view = this._transactionView(control);
-    // No owner check guards this slot, unlike `_activeTransaction`, which an
-    // asynchronous transaction publishes across awaits and must therefore keep
-    // with the event that opened it. The callback below runs to its end before
-    // any other event starts, so only that event can read the slot, and the
-    // restore below runs at exactly the point the savepoint ends.
-    const previousSync = root._activeSyncTransaction;
-    root._activeSyncTransaction = view;
-    try {
-      // workerd hands the callback nothing: the root's own methods write
-      // inside the transaction, and a throw rolls it back.
-      const value = f();
-      if (!control.rolledBack) {
-        this._transactionCommit(savepoint);
-        control.committed = true;
-      }
-      return value;
-    } catch (error) {
-      if (!control.rolledBack) {
-        try {
-          this._transactionRollback(savepoint);
-          control.rolledBack = true;
-        } catch (rollbackError) {
-          this._abortAfterFailedRollback(rollbackError, error);
+    return __storage_transaction_sync(this._scope, control.terminated, () => {
+      // BEGIN 到普通异常回滚都在原生保护边界内，不能留下未受保护的事务窗口。
+      __storage_transaction_control(
+        this._scope, "start", this._transactionDepth > 0, savepoint,
+      );
+      const previousSync = root._activeSyncTransaction;
+      root._activeSyncTransaction = view;
+      try {
+        // 与 workerd 一致，业务 callback 不接收事务参数。
+        const value = f();
+        if (control.terminated[0]) throw new Error("Cannot commit a terminated transaction");
+        if (!control.rolledBack) {
+          this._transactionCommit(savepoint);
+          control.committed = true;
         }
+        return value;
+      } catch (error) {
+        if (!control.rolledBack && !control.terminated[0]) {
+          try {
+            this._transactionRollback(savepoint);
+            control.rolledBack = true;
+          } catch (rollbackError) {
+            this._abortAfterFailedRollback(rollbackError, error);
+          }
+        }
+        throw error;
+      } finally {
+        root._activeSyncTransaction = previousSync;
       }
-      throw error;
-    } finally {
-      root._activeSyncTransaction = previousSync;
-    }
+    });
   }
   _newTransactionControl(savepoint) {
     const control = {
@@ -1814,6 +1808,8 @@ class DurableObjectStorage {
         this._transactionRollback(savepoint, true);
         control.rollbackPerformed = true;
       },
+      // 原生层在硬终止时使整条事务链失效。
+      terminated: this._transactionControl?.terminated || new Uint8Array(1),
     };
     return control;
   }
@@ -1835,6 +1831,7 @@ class DurableObjectStorage {
       // savepoint, so ending this layer first would make SQLite release the
       // child's savepoint and let its continuation run against a false owner.
       await this._drainNestedTransactions(control);
+      if (control.terminated[0]) throw new Error("Cannot commit a terminated transaction");
       if (!control.rolledBack) {
         this._transactionCommit(savepoint);
         control.committed = true;
@@ -1844,7 +1841,7 @@ class DurableObjectStorage {
       return value;
     } catch (error) {
       await this._drainNestedTransactions(control);
-      if (!control.rollbackPerformed) {
+      if (!control.rollbackPerformed && !control.terminated[0]) {
         // The flag records a rollback that happened, not one that was
         // attempted: a rollback that fails leaves the savepoint open, and a
         // later transaction on the same connection would commit its writes.
@@ -1986,7 +1983,7 @@ class DurableObjectStorage {
       // before the callback started holds nothing, so its slot is released
       // here or nothing ever would.
       abandoned = error;
-      if (control && !control.rolledBack && !control.committed) {
+      if (control && !control.rolledBack && !control.committed && !control.terminated[0]) {
         try {
           if (control.pending.size === 0) control.rollback();
           control.rolledBack = true;
