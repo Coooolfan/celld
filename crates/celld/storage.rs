@@ -3556,6 +3556,33 @@ pub fn transaction_control(
     result
 }
 
+/// 被 V8 硬终止的同步栈不能继续使用其事务和游标。仅清理该 cell，
+/// 不触碰同 isolate 的其他连接；已提交数据保留。嵌套同步调用逐层收尾时可重复调用。
+pub(crate) fn rollback_terminated_transaction(scope: &str) -> Result<(), String> {
+    close_sync_list_cursors(scope);
+    close_sql_cursors(scope);
+    let result = with(scope, |connection| {
+        if connection.is_autocommit() {
+            return Ok(());
+        }
+        without_sql_authorizer(connection, || connection.execute_batch("ROLLBACK"))
+            .map_err(|error| error.to_string())
+    })
+    .unwrap_or(Ok(()));
+    if let Err(error) = &result {
+        // 不确定的连接禁止后续存储操作，不能让后续事务提交遗留写入。
+        sql_critical_errors(|errors| {
+            errors
+                .borrow_mut()
+                .entry(scope.to_string())
+                .or_insert_with(|| error.clone());
+        });
+    } else {
+        publish_alarm_if_transaction_dirty(scope);
+    }
+    result
+}
+
 #[cfg(celld_internal_tests)]
 pub fn set_query_only_for_test(scope: &str, enabled: bool) -> anyhow::Result<()> {
     with(scope, |connection| {

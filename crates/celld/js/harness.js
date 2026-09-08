@@ -1566,6 +1566,7 @@ class DurableObjectStorage {
   _transactionStatus() {
     let status = null;
     for (let control = this._transactionControl; control; control = control.parent) {
+      if (control.terminated[0]) return "terminated";
       if (control.rolledBack) return "rolled back";
       if (control.committed) status = "committed";
     }
@@ -1748,26 +1749,33 @@ class DurableObjectStorage {
     if (this._transactionDepth === 0 && owner !== "" &&
         root._transactionOwner === owner && root._activeTransaction !== null)
       return root._activeTransaction.transactionSync(f);
-    const savepoint = this._transactionStart();
+    const savepoint = "cells_tx_" + (++root._transactionSerial);
     const control = this._newTransactionControl(savepoint);
-    try {
-      const value = f(this._transactionView(control));
-      if (!control.rolledBack) {
-        this._transactionCommit(savepoint);
-        control.committed = true;
-      }
-      return value;
-    } catch (error) {
-      if (!control.rolledBack) {
-        try {
-          this._transactionRollback(savepoint);
-          control.rolledBack = true;
-        } catch (rollbackError) {
-          this._abortAfterFailedRollback(rollbackError, error);
+    return __storage_transaction_sync(this._scope, control.terminated, () => {
+      // BEGIN 到普通异常回滚都在原生保护边界内，不能留下未受保护的事务窗口。
+      __storage_transaction_control(
+        this._scope, "start", this._transactionDepth > 0, savepoint,
+      );
+      try {
+        const value = f(this._transactionView(control));
+        if (control.terminated[0]) throw new Error("Cannot commit a terminated transaction");
+        if (!control.rolledBack) {
+          this._transactionCommit(savepoint);
+          control.committed = true;
         }
+        return value;
+      } catch (error) {
+        if (!control.rolledBack && !control.terminated[0]) {
+          try {
+            this._transactionRollback(savepoint);
+            control.rolledBack = true;
+          } catch (rollbackError) {
+            this._abortAfterFailedRollback(rollbackError, error);
+          }
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
   _newTransactionControl(savepoint) {
     const control = {
@@ -1780,6 +1788,8 @@ class DurableObjectStorage {
         this._transactionRollback(savepoint, true);
         control.rollbackPerformed = true;
       },
+      // 原生层在硬终止时使整条事务链失效。
+      terminated: this._transactionControl?.terminated || new Uint8Array(1),
     };
     return control;
   }
@@ -1801,6 +1811,7 @@ class DurableObjectStorage {
       // savepoint, so ending this layer first would make SQLite release the
       // child's savepoint and let its continuation run against a false owner.
       await this._drainNestedTransactions(control);
+      if (control.terminated[0]) throw new Error("Cannot commit a terminated transaction");
       if (!control.rolledBack) {
         this._transactionCommit(savepoint);
         control.committed = true;
@@ -1810,7 +1821,7 @@ class DurableObjectStorage {
       return value;
     } catch (error) {
       await this._drainNestedTransactions(control);
-      if (!control.rollbackPerformed) {
+      if (!control.rollbackPerformed && !control.terminated[0]) {
         // The flag records a rollback that happened, not one that was
         // attempted: a rollback that fails leaves the savepoint open, and a
         // later transaction on the same connection would commit its writes.
@@ -1952,7 +1963,7 @@ class DurableObjectStorage {
       // before the callback started holds nothing, so its slot is released
       // here or nothing ever would.
       abandoned = error;
-      if (control && !control.rolledBack && !control.committed) {
+      if (control && !control.rolledBack && !control.committed && !control.terminated[0]) {
         try {
           if (control.pending.size === 0) control.rollback();
           control.rolledBack = true;
