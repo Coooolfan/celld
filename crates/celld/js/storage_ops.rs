@@ -708,6 +708,82 @@ pub(super) fn op_sql_register_nomem_function_for_test(
         throw_storage_error(scope, "sql.registerNomemFunctionForTest", error);
     }
 }
+
+/// 同步事务的原生调用边界。V8 硬终止不执行 JS catch/finally，
+/// 收尾只能在调用栈退回原生层时完成，且不能取消终止后继续执行业务。
+pub(super) fn op_storage_transaction_sync(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue<v8::Value>,
+) {
+    let cell = args.get(0).to_rust_string_lossy(scope);
+    let Ok(marker) = v8::Local::<v8::Uint8Array>::try_from(args.get(1)) else {
+        throw_storage_error(scope, "transactionSync", "invalid transaction marker");
+        return;
+    };
+    let Some(buffer) = marker.buffer(scope) else {
+        return;
+    };
+    let backing = buffer.get_backing_store();
+    let marker_offset = marker.byte_offset();
+    if marker.byte_length() != 1
+        || marker_offset >= backing.byte_length()
+        || backing.is_shared()
+        || backing.is_resizable_by_user_javascript()
+    {
+        throw_storage_error(scope, "transactionSync", "invalid transaction marker");
+        return;
+    }
+    let Ok(callback) = v8::Local::<v8::Function>::try_from(args.get(2)) else {
+        throw_storage_error(scope, "transactionSync", "callback must be a function");
+        return;
+    };
+    // 父事务之前排队的 KV 写入先归入父边界，不能被子回调终止误删。
+    if let Err(error) = flush_pending_puts(scope, &cell) {
+        throw_storage_error(scope, "transactionSync", error);
+        return;
+    }
+    // 保存准确的 reaction owner；回调可能在别的事件的 microtask checkpoint 运行。
+    let context = current_reaction_io_context(scope);
+    let tc = std::pin::pin!(v8::TryCatch::new(scope));
+    let scope = &mut tc.init();
+    let recv = v8::undefined(scope).into();
+    let result = callback.call(scope, recv, &[]);
+    if scope.has_terminated() || scope.is_execution_terminating() {
+        // backing store 在整个调用期间存活；无须进入已终止的 JS 即可失效事务句柄。
+        backing[marker_offset].set(1);
+        let state = actor_runtime_state(scope);
+        state
+            .pending_puts
+            .lock()
+            .expect("pending puts lock poisoned")
+            .remove(&cell);
+        if let Err(error) = storage::rollback_terminated_transaction(&cell) {
+            tracing::error!(scope = cell, %error, "terminated transaction rollback failed");
+        }
+        if let Some(context) = context {
+            // 沿用事件终止收尾，释放此事务所属事件的 input gate；不能遗留异步父事务的锁。
+            state
+                .termination
+                .lock()
+                .expect("termination lock poisoned")
+                .get_or_insert_with(|| ExecutionTermination {
+                    error: "JavaScript execution was terminated during transactionSync".to_string(),
+                    actor_scope: Some(cell),
+                    context_id: context.continuation_id(),
+                });
+        }
+        scope.rethrow();
+        return;
+    }
+    match result {
+        Some(value) => rv.set(value),
+        None => {
+            scope.rethrow();
+        }
+    }
+}
+
 pub(super) fn op_storage_transaction_control(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
