@@ -2,7 +2,25 @@
 const spin = () => { while (true) {} };
 const isolateId = crypto.randomUUID();
 export class TransactionCell {
-  constructor(state) { this.state = state; this.leaked = null; this.cursor = null; }
+  constructor(state, env) { this.state = state; this.env = env; this.leaked = null; this.cursor = null; }
+  facet() {
+    return this.state.facets.get("counter", () => ({
+      class: this.env.LOADER.get("transaction-facet", () => ({
+        mainModule: "facet.js", globalOutbound: null,
+        modules: { "facet.js": `
+          import { DurableObject } from "cloudflare:workers";
+          export class Counter extends DurableObject {
+            async fetch(req) {
+              const sql = this.ctx.storage.sql;
+              sql.exec("CREATE TABLE IF NOT EXISTS counter(n INTEGER)").toArray();
+              if (new URL(req.url).pathname === "/write") sql.exec("INSERT INTO counter VALUES (1)").toArray();
+              return Response.json(sql.exec("SELECT COUNT(*) AS n FROM counter").toArray()[0]);
+            }
+          }
+        ` },
+      })).getDurableObjectClass("Counter"),
+    }));
+  }
   init() {
     this.state.storage.sql.exec("CREATE TABLE IF NOT EXISTS entries(v TEXT)").toArray();
   }
@@ -19,7 +37,15 @@ export class TransactionCell {
     this.init();
     const storage = this.state.storage;
     const write = value => storage.sql.exec("INSERT INTO entries VALUES (?)", value).toArray();
-    if (path === "/init") {
+    if (path === "/facet-read") {
+      return this.facet().fetch(new Request("http://facet/read"));
+    } else if (path === "/terminate-facet") {
+      await storage.transaction(async () => {
+        const result = await this.facet().fetch(new Request("http://facet/write"));
+        if (result.status !== 200 || (await result.json()).n !== 1) throw Error("facet 写入失败");
+        storage.transactionSync(() => spin());
+      });
+    } else if (path === "/init") {
       storage.transactionSync(() => { write("committed"); storage.kv.put("baseline", "keep"); });
     } else if (path === "/ordinary-throw") {
       const error = new Error("ordinary");
@@ -49,6 +75,22 @@ export class TransactionCell {
         if (tx.kv.get("baseline") !== "parent-pending") throw Error("子事务回滚不能丢失父事务排队写入");
         tx.kv.put("baseline", "keep");
         tx.sql.exec("DELETE FROM entries WHERE v='outer'").toArray();
+      });
+    } else if (path === "/reentrant-root") {
+      await storage.transaction(async outer => {
+        outer.sql.exec("INSERT INTO entries VALUES ('outer')").toArray();
+        try {
+          await storage.transaction(async inner => {
+            inner.sql.exec("INSERT INTO entries VALUES ('inner')").toArray();
+            await new Promise(resolve => setTimeout(resolve, 10));
+            throw Error("inner");
+          });
+        } catch (error) { if (error.message !== "inner") throw error; }
+        storage.transactionSync(inner => {
+          const rows = inner.sql.exec("SELECT v FROM entries ORDER BY rowid").toArray().map(row => row.v);
+          if (JSON.stringify(rows) !== JSON.stringify(["committed", "outer"])) throw Error("根句柄重入必须使用父事务视图");
+          inner.sql.exec("DELETE FROM entries WHERE v='outer'").toArray();
+        });
       });
     } else if (path === "/explicit-rollback") {
       storage.transactionSync(tx => { tx.sql.exec("INSERT INTO entries VALUES ('rollback')").toArray(); tx.rollback(); });
@@ -80,10 +122,11 @@ export class TransactionCell {
     } else if (path.startsWith("/terminate")) {
       if (path === "/terminate-resume") await new Promise(r => setTimeout(r, 20));
       if (path === "/terminate-parent-pending") storage.put("baseline", "parent-pending");
-      if (path === "/terminate-async") {
+      if (path === "/terminate-async" || path === "/terminate-root-sync") {
         await storage.transaction(async tx => {
           tx.sql.exec("INSERT INTO entries VALUES ('async-parent')").toArray();
-          tx.transactionSync(inner => { inner.sql.exec("INSERT INTO entries VALUES ('inner')").toArray(); spin(); });
+          const target = path === "/terminate-root-sync" ? storage : tx;
+          target.transactionSync(inner => { inner.sql.exec("INSERT INTO entries VALUES ('inner')").toArray(); spin(); });
         });
       } else {
         storage.transactionSync(tx => {

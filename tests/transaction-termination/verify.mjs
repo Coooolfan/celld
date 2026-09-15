@@ -62,12 +62,20 @@ try {
   for (const cell of ["a", "b"]) assert.deepEqual(await read("/init", cell), expected);
   if (maxCells === "32") assert.equal(isolates.get("a"), isolates.get("b"), "必须实际共用 isolate");
   if (maxCells === "1") assert.notEqual(isolates.get("a"), isolates.get("b"), "必须实际分属 isolate");
-  for (const path of ["/ordinary-throw", "/return-value", "/nested", "/explicit-rollback", "/slow-async"]) {
+  for (const path of ["/ordinary-throw", "/return-value", "/nested", "/reentrant-root", "/explicit-rollback", "/slow-async"]) {
     assert.deepEqual(await read(path), expected);
   }
   console.log(`PASS max_cells=${maxCells} 普通异常/嵌套/显式回滚与异步事务`);
+  assert.deepEqual(await (await request("/facet-read")).json(), { n: 0 });
+  const facetStarted = performance.now();
+  const facetTerminated = await request("/terminate-facet");
+  assert.equal(facetTerminated.status, 500);
+  assert(performance.now() - facetStarted >= 700, "facet 写入后必须实际执行到 watchdog 超时");
+  assert.deepEqual(await (await request("/facet-read")).json(), { n: 0 }, "硬终止必须撤销父事务的 facet 延迟镜像");
+  assert.deepEqual(await read(), expected);
+  console.log(`PASS max_cells=${maxCells} 父事务硬终止后 facet 延迟镜像回滚`);
   // 邻居事务可以跨 await 存活，另一个 cell 的终止不能回滚它。
-  for (const path of ["/terminate", "/terminate-resume", "/terminate-nested", "/terminate-cursor", "/terminate-returning", "/terminate-abort", "/terminate-async"]) {
+  for (const path of ["/terminate", "/terminate-resume", "/terminate-nested", "/terminate-cursor", "/terminate-returning", "/terminate-abort", "/terminate-async", "/terminate-root-sync"]) {
     const neighbor = read("/slow-async", "b");
     await sleep(100);
     const began = performance.now();
