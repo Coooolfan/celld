@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const binary = resolve(process.argv[2]);
+const testEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CELLD_|AWS_|S3_)/.test(key)));
 const maxCells = process.argv[3] || "32";
 const dir = await mkdtemp(join(tmpdir(), "celld-watchdog-"));
 const fixture = fileURLToPath(new URL(".", import.meta.url));
@@ -26,7 +27,7 @@ await new Promise((resolve, reject) => {
 });
 const child = spawn(binary, ["dev", "--port", String(port), "--logs"], {
   cwd: dir, detached: true, stdio: ["ignore", log.fd, log.fd],
-  env: { ...process.env, CELLD_WORKER_LOADER: "LOADER", CELLD_TOKIO_THREADS: "1",
+  env: { ...testEnv, CELLD_TOKIO_THREADS: "1",
     CELLD_MAX_CELLS_PER_ISOLATE: maxCells, CELLD_TURN_BUDGET_S: "1", CELLD_HANDLER_BUDGET_S: "30" },
 });
 const request = (path, timeout = 7000) => fetch(base + path, { signal: AbortSignal.timeout(timeout) });
@@ -79,7 +80,7 @@ try {
   console.error((await readFile(join(dir, "dev.log"), "utf8")).slice(-14000));
   throw error;
 } finally {
-  // v0.4.1 节点处于独立进程组，监督器收尾最多等待 35 秒。
+  // 节点处于独立进程组，监督器收尾最多等待 35 秒。
   // 给监督器时间关闭节点，不能在 500ms 后杀掉监督器留下孤儿节点。
   try { process.kill(child.pid, "SIGINT"); } catch {}
   for (let attempt = 0; attempt < 400 && child.exitCode === null && child.signalCode === null; attempt++) {

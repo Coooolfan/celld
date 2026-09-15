@@ -2,6 +2,7 @@
   "name": "transaction-termination",
   "main": "src/index.js",
   "compatibility_date": "2025-03-01",
+  "worker_loaders": [{ "binding": "LOADER" }],
   "durable_objects": { "bindings": [{ "name": "CELLS", "class_name": "TransactionCell" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TransactionCell"] }]
 }

@@ -2,6 +2,7 @@
   "name": "watchdog-test",
   "main": "src/index.js",
   "compatibility_date": "2025-03-01",
+  "worker_loaders": [{ "binding": "LOADER" }],
   "durable_objects": {
     "bindings": [{ "name": "CELL", "class_name": "TestCell" }]
   }
