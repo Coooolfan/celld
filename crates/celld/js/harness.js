@@ -1752,7 +1752,6 @@ class DurableObjectStorage {
     const savepoint = "cells_tx_" + (++root._transactionSerial);
     const control = this._newTransactionControl(savepoint);
     return __storage_transaction_sync(this._scope, control.terminated, () => {
-      // BEGIN 到普通异常回滚都在原生保护边界内，不能留下未受保护的事务窗口。
       __storage_transaction_control(
         this._scope, "start", this._transactionDepth > 0, savepoint,
       );
@@ -1788,7 +1787,6 @@ class DurableObjectStorage {
         this._transactionRollback(savepoint, true);
         control.rollbackPerformed = true;
       },
-      // 原生层在硬终止时使整条事务链失效。
       terminated: this._transactionControl?.terminated || new Uint8Array(1),
     };
     return control;

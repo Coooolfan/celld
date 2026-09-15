@@ -3559,6 +3559,7 @@ pub fn transaction_control(
 /// 被 V8 硬终止的同步栈不能继续使用其事务和游标。仅清理该 cell，
 /// 不触碰同 isolate 的其他连接；已提交数据保留。嵌套同步调用逐层收尾时可重复调用。
 pub(crate) fn rollback_terminated_transaction(scope: &str) -> Result<(), String> {
+    let transaction_key = root_transaction_key(scope);
     close_sync_list_cursors(scope);
     close_sql_cursors(scope);
     let result = with(scope, |connection| {
@@ -3569,6 +3570,10 @@ pub(crate) fn rollback_terminated_transaction(scope: &str) -> Result<(), String>
             .map_err(|error| error.to_string())
     })
     .unwrap_or(Ok(()));
+    // 整个同步事务栈已失效，同时撤销上游记录的 facet 延迟镜像。
+    if let Some(key) = transaction_key.as_ref() {
+        abandon_root_transaction(key);
+    }
     if let Err(error) = &result {
         // 不确定的连接禁止后续存储操作，不能让后续事务提交遗留写入。
         sql_critical_errors(|errors| {
