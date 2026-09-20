@@ -20,6 +20,20 @@ export class TestCell {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(req) {
     const url = new URL(req.url);
+    if (url.pathname === "/limited") {
+      const cpuMs = Number(url.searchParams.get("cpu"));
+      const stub = this.env.LOADER.get(`limited-${cpuMs}`, () => ({
+        mainModule: "index.js",
+        compatibilityDate: "2025-03-01",
+        globalOutbound: null,
+        limits: { cpuMs },
+        modules: { "index.js": `export default { fetch(req) {
+          if (new URL(req.url).searchParams.has("spin")) while (true) {}
+          return new Response("recovered");
+        } }` },
+      }));
+      return stub.getEntrypoint().fetch(req);
+    }
     if (url.pathname.startsWith("/facet-")) {
       const facet = this.state.facets.get("business", () => {
         this.facetWorker = this.env.LOADER.load({

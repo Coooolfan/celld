@@ -45,10 +45,10 @@ node tests/turn-watchdog/verify.mjs target/release/celld 1
 
 ## 验收口径
 
-2026-09-15，macOS ARM64、Rust 1.94.1、Node.js v24.20.0：上述四组真实 release binary 测试通过。上游基线为 `12d5b6333fe52717325addcfe1e99e9fd4f77bcd`（v0.5.0），包含 fork 的独立 watchdog 和同步事务硬终止保护。构建产物 SHA-256：
+2026-09-20，macOS ARM64、Rust 1.94.1、Node.js v24.20.0：上述四组真实 release binary 测试通过。上游基线为 `42269c1`（v0.5.1），包含 fork 的独立 watchdog 和同步事务硬终止保护。构建产物 SHA-256：
 
 ```text
-d1a24797c15856e79aca5de9e679d351e1f120c207101627c967c8a204a2e5bb
+7b172e47f21def96cb412131d84d62a4bfb348bbbf40b54e9aa639ae4fa69fc9
 ```
 
 范围限于 `transactionSync()` 动态调用栈内的硬终止，包括异步父事务包裹它的情况。未覆盖纯异步事务在该调用栈之外被终止、真实磁盘 I/O/commit/rollback 故障注入、OOM、多节点和 Cloudflare 云上同条件对照。`celld_internal_tests` 所需外部测试语料未运行。
@@ -57,4 +57,4 @@ d1a24797c15856e79aca5de9e679d351e1f120c207101627c967c8a204a2e5bb
 
 回滚代码可撤销独立修复提交；不需迁移业务数据。回滚会重新暴露同步事务终止缺陷，依赖该保证的上层平台不得继续投递此类业务。binary 发布、维护窗口和生产回滚需独立授权。
 
-以上只描述 fork 补丁的撤销。0.4.1 → 0.5.0 的引擎升级涉及 alarm discovery 格式迁移，必须遵守上游停机与备份要求；不能以恢复旧 binary 代替数据格式回滚验证。
+以上只描述 fork 补丁的撤销。上游允许 0.5.0 → 0.5.1 滚动升级，但本回归未验证反向降级。0.4.1 → 0.5.0 涉及 alarm discovery 格式迁移，不能以恢复旧 binary 代替数据格式回滚验证。
