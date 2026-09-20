@@ -66,6 +66,23 @@ try {
     }
     console.log(`PASS max_cells=${maxCells} ${path} 500 ${elapsed.toFixed(0)}ms；后续请求与持久化正常`);
   }
+  // 显式 CPU 预算先到、turn 预算先到和近同时到期；同一 loaded isolate 复用。
+  for (const cpu of [50, 5000, 1000]) {
+    assert.equal(await (await request(`/limited?cpu=${cpu}`)).text(), "recovered");
+    for (let round = 0; round < 2; round++) {
+      const start = performance.now();
+      const response = await request(`/limited?cpu=${cpu}&spin=1`);
+      assert.equal(response.status, 500, await response.text());
+      const elapsed = performance.now() - start;
+      assert(elapsed < 6000, "两种 watchdog 均应及时收尾");
+      if (cpu === 50) assert(elapsed < 900, "CPU 预算应早于 1s turn 预算终止死循环");
+      if (cpu === 5000) assert(elapsed >= 800, "较长 CPU 预算应由 turn watchdog 终止");
+      assert.equal(await (await request(`/limited?cpu=${cpu}`)).text(), "recovered");
+      assert.deepEqual(await (await request("/ping")).json(), { n: 1 });
+      assert.deepEqual(await (await request("/ping?biz=neighbor")).json(), { n: 1 });
+      console.log(`PASS max_cells=${maxCells} CPU=${cpu}ms round=${round} ${elapsed.toFixed(0)}ms；同一 loaded Worker 与邻居恢复`);
+    }
+  }
   const burst = performance.now();
   const responses = await Promise.all([
     ...Array.from({ length: 4 }, (_, i) => request(`/inline-spin?biz=burst${i}`, 15000)),
