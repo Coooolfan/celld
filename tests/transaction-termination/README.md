@@ -19,9 +19,9 @@ node tests/turn-watchdog/verify.mjs target/release/celld 1
 ## 断言
 
 - 普通异常保持错误对象身份；同步返回值和 Promise 返回值不变。
-- 普通/嵌套/显式回滚正常；子事务回滚不丢失父事务排队的 KV 写入。
+- 同步 callback 无参数；经 root storage 句柄嵌套时，子事务回滚不丢失父事务排队的 KV 写入，外层回滚撤销已释放的子 savepoint。显式 rollback 使用异步 transaction 提供的事务句柄。
 - 异步父事务通过根 storage 句柄重入异步/同步事务时，保留父事务视图与子事务回滚语义。
-- 父事务写入 facet 后在同步调用栈内被终止，facet 延迟镜像回滚，后续读取恢复原值。
+- 父事务写入 facet 后在同步调用栈内被终止，父数据库未提交写入回滚，facet 独立提交保留；进程重启后两者状态一致。
 - HTTP 同步栈、await 恢复后的同步事务、嵌套同步事务、大 SELECT cursor、未耗尽的 INSERT RETURNING cursor 均可被看门狗终止。
 - `state.abort()` 在同步事务内部终止；事务之外的 abort 后也可继续使用存储。
 - `transaction()` 包裹的 `transactionSync()` 终止后，原生连接与 input gate 都恢复。
@@ -37,24 +37,26 @@ node tests/turn-watchdog/verify.mjs target/release/celld 1
 
 1. 设置事务链共享的内部失效标记，防止旧句柄和异步父事务的迟到收尾继续操作连接。
 2. 丢弃该 cell 的未 flush KV，关闭该 cell 的 SQL/KV cursor，回滚仍然打开的整个 SQLite 事务；不清理其他 cell。
-   同时调用上游 `abandon_root_transaction()` 清理延迟 facet 镜像并使对应 facet 重新读取持久化状态。
+   facet 按上游 0.6.0 契约独立提交和复制，不随 root 事务回滚。
 3. 回滚失败时使用现有 SQL critical-error 状态拒绝后续存储操作；不把未知状态当作成功。
 4. 沿用所属 reaction 的事件终止收尾，释放相关 input gate；保留已有 abort 原因。
 
-这不是业务可调用的新 SQL/事务 API，不改变数据库格式。嵌套同步栈硬终止意味着整个栈不能继续，因此回滚整个事务，而不是仅回滚子 savepoint。普通异常仍使用原有 savepoint 语义。
+下一次同步事务调用会清除已终止的内部同步事务视图，避免 V8 跳过 finally 后阻止后续请求。
+
+这不是业务可调用的新 SQL/事务 API；fork 的保护代码不另改数据库格式。嵌套同步栈硬终止意味着整个栈不能继续，因此回滚整个事务，而不是仅回滚子 savepoint。普通异常仍使用原有 savepoint 语义。
 
 ## 验收口径
 
-2026-09-20，macOS ARM64、Rust 1.94.1、Node.js v24.20.0：上述四组真实 release binary 测试通过。上游基线为 `42269c1`（v0.5.1），包含 fork 的独立 watchdog 和同步事务硬终止保护。构建产物 SHA-256：
+2026-09-27，macOS ARM64、Rust 1.94.1、Node.js v24.20.0：上述四组真实 release binary 测试通过。上游基线为 `bad4649`（v0.6.0），包含 fork 的独立 watchdog 和同步事务硬终止保护。构建产物 SHA-256：
 
 ```text
-7b172e47f21def96cb412131d84d62a4bfb348bbbf40b54e9aa639ae4fa69fc9
+bd91323a71c17d97fef4b367eec0d2297ef760e6e271a8e802b9e5bff4c9ae84
 ```
 
 范围限于 `transactionSync()` 动态调用栈内的硬终止，包括异步父事务包裹它的情况。未覆盖纯异步事务在该调用栈之外被终止、真实磁盘 I/O/commit/rollback 故障注入、OOM、多节点和 Cloudflare 云上同条件对照。`celld_internal_tests` 所需外部测试语料未运行。
 
 看门狗不是 native SQL/IO 的即时中断器；原生保护层在执行返回后收尾。通过这些回归不等于完成所有资源隔离或故障恢复验收，也不表示已部署生产。
 
-回滚代码可撤销独立修复提交；不需迁移业务数据。回滚会重新暴露同步事务终止缺陷，依赖该保证的上层平台不得继续投递此类业务。binary 发布、维护窗口和生产回滚需独立授权。
+撤销 fork 的保护代码会重新暴露同步事务终止缺陷，依赖该保证的平台不得继续投递此类业务。上游 0.6.0 的 facet 首开迁移和 fleet 恢复协议另有升级约束；本回归不证明 0.6.0 数据可由旧 binary 读取。binary 发布、维护窗口和部署回滚需独立授权。
 
-以上只描述 fork 补丁的撤销。上游允许 0.5.0 → 0.5.1 滚动升级，但本回归未验证反向降级。0.4.1 → 0.5.0 涉及 alarm discovery 格式迁移，不能以恢复旧 binary 代替数据格式回滚验证。
+0.5.1 → 0.6.0：fleet durability 要先停止全部旧节点，bucket durability 可滚动升级。反向降级与旧 facet 首开迁移尚未在本回归中验证。

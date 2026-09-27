@@ -19,7 +19,7 @@ node verify.mjs ../../target/release/celld 1
 
 - DO 同步 JS 死循环、异步 fetch 恢复后的死循环、WASM 死循环。
 - loaded worker、普通路由 worker 同步及异步恢复后的死循环。
-- facet 同步及异步恢复后的死循环；facet 禁网且拥有独立 SQLite。
+- Worker Loader facet 和 ctx.exports 同 isolate facet 的同步及异步恢复后死循环；Worker Loader facet 禁网，各 facet 数据库独立。
 - 各失控请求返回 500，耗时小于 6 秒，不等待 30 秒 handler budget。
 - 每次终止后连续十轮请求路由、原 cell 和相邻 cell，验证服务恢复及各库计数保留。
 - 同时读取原业务与相邻业务的 facet，验证各库分别保留 1/0 行，终止不污染相邻业务。
@@ -32,19 +32,19 @@ node verify.mjs ../../target/release/celld 1
 
 ## 适用基线与验收
 
-基线为上游 `42269c1`（v0.5.1）。看门狗在 `Slot::turn_in()` 内计时，
-保留 per-cell 调度及全局 heap identity。合并后的请求驱动循环及
+基线为上游 `bad4649`（v0.6.0）。看门狗在 `Slot::turn_in()` 内计时，
+保留 per-cell 调度、全局 heap identity 和 ctx.exports facet 所需的当前 slot 跟踪。合并后的请求驱动循环及
 `PendingEventIdle` 收尾均报告 turn 硬终止；保留 cross-entry durability gate、
 shutdown 取消和 Queue producer 的全事件周期许可。Worker Loader 通过
 `wrangler.jsonc` 的 `worker_loaders` 声明，不使用已移除的环境变量。
 上游内部测试依赖未随仓库提供的 `CELLD_INTERNAL_*` / `CELLD_CONFORMANCE_*`
 外部源码，本回归使用实际 release 二进制，不宣称覆盖该内部测试集。
 
-验证快照（2026-09-20，macOS ARM64）：Rust 1.94.1 release 构建、修改文件的
+验证快照（2026-09-27，macOS ARM64）：Rust 1.94.1 release 构建、修改文件的
 rustfmt 检查、JS 语法及 `git diff --check` 通过。单 Tokio 线程、每 isolate
-cell 上限 32/1 两轮均通过八类死循环、并发请求收敛、异步等待、终止后连续读取、
+cell 上限 32/1 两轮均通过十类死循环、并发请求收敛、异步等待、终止后连续读取、
 facet SQL 隔离及禁网检查，退出后端口释放。显式 CPU 预算与 turn watchdog
-共同启用的三组重复终止与恢复通过；50 ms CPU 预算约 55–58 ms 终止，
+共同启用的三组重复终止与恢复通过；50 ms CPU 预算约 54–57 ms 终止，
 5000 ms CPU 预算由 turn watchdog 在约 1.0–1.2 秒终止。构建 hash 与事务验收见
 [同步事务硬终止回归](../transaction-termination/README.md)。
 

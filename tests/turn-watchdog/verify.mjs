@@ -45,11 +45,13 @@ try {
   assert.deepEqual(await (await request("/facet-write")).json(), { n: 1 });
   assert.deepEqual(await (await request("/facet-ping?biz=neighbor")).json(), { n: 0 });
   assert.equal(await (await request("/facet-egress")).text(), "denied");
+  assert.deepEqual(await (await request("/local-facet-write")).json(), { n: 1 });
+  assert.deepEqual(await (await request("/local-facet-ping?biz=neighbor")).json(), { n: 0 });
   const waiting = performance.now();
   assert.deepEqual(await (await request("/wait")).json(), { n: 1 });
   assert(performance.now() - waiting >= 1400, "异步等待超过 turn budget 仍应成功");
   console.log(`PASS max_cells=${maxCells} 异步等待 1.5s 不计入同步 turn budget`);
-  for (const path of ["/inline-spin", "/async-spin", "/wasm-spin", "/loaded-spin", "/router-spin", "/router-async-spin", "/facet-spin", "/facet-async-spin"]) {
+  for (const path of ["/inline-spin", "/async-spin", "/wasm-spin", "/loaded-spin", "/router-spin", "/router-async-spin", "/facet-spin", "/facet-async-spin", "/local-facet-spin", "/local-facet-async-spin"]) {
     const start = performance.now();
     const response = await request(path);
     const body = await response.text();
@@ -63,6 +65,8 @@ try {
       assert.deepEqual(await (await request("/ping?biz=neighbor")).json(), { n: 1 });
       assert.deepEqual(await (await request("/facet-ping")).json(), { n: 1 });
       assert.deepEqual(await (await request("/facet-ping?biz=neighbor")).json(), { n: 0 });
+      assert.deepEqual(await (await request("/local-facet-ping")).json(), { n: 1 });
+      assert.deepEqual(await (await request("/local-facet-ping?biz=neighbor")).json(), { n: 0 });
     }
     console.log(`PASS max_cells=${maxCells} ${path} 500 ${elapsed.toFixed(0)}ms；后续请求与持久化正常`);
   }

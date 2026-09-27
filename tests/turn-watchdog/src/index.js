@@ -1,3 +1,5 @@
+import { DurableObject } from "cloudflare:workers";
+
 const wasm = new WebAssembly.Module(new Uint8Array([
   0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,
   7,8,1,4,115,112,105,110,0,0,10,9,1,7,0,3,64,12,0,11,11,
@@ -20,6 +22,9 @@ export class TestCell {
   constructor(state, env) { this.state = state; this.env = env; }
   async fetch(req) {
     const url = new URL(req.url);
+    if (url.pathname.startsWith("/local-facet-")) {
+      return this.state.facets.get("local", () => ({ class: this.state.exports.LocalFacet })).fetch(req);
+    }
     if (url.pathname === "/limited") {
       const cpuMs = Number(url.searchParams.get("cpu"));
       const stub = this.env.LOADER.get(`limited-${cpuMs}`, () => ({
@@ -87,5 +92,21 @@ export class TestCell {
     sql.exec("CREATE TABLE IF NOT EXISTS counter (n INTEGER)");
     if (url.pathname === "/write") sql.exec("INSERT INTO counter VALUES (1)");
     return Response.json([...sql.exec("SELECT COUNT(*) AS n FROM counter")][0]);
+  }
+}
+
+// ctx.exports facet 与 root 共用 isolate，验证当前 slot 跟踪及终止后的复用。
+export class LocalFacet extends DurableObject {
+  async fetch(req) {
+    const path = new URL(req.url).pathname;
+    const sql = this.ctx.storage.sql;
+    sql.exec("CREATE TABLE IF NOT EXISTS counter(n INTEGER)").toArray();
+    if (path === "/local-facet-write") sql.exec("INSERT INTO counter VALUES (1)").toArray();
+    if (path === "/local-facet-spin") while (true) {}
+    if (path === "/local-facet-async-spin") {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      while (true) {}
+    }
+    return Response.json(sql.exec("SELECT COUNT(*) AS n FROM counter").toArray()[0]);
   }
 }

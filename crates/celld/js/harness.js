@@ -1753,7 +1753,6 @@ class DurableObjectStorage {
     this._assertTransactionActive("transactionSync");
     const root = this._transactionRoot;
     if (this._transactionDepth === 0) {
-      // 硬终止跳过 finally；原生标记使遗留的同步事务视图失效。
       if (root._activeSyncTransaction?._transactionControl.terminated[0])
         root._activeSyncTransaction = null;
       if (root._activeSyncTransaction !== null)
@@ -1773,7 +1772,6 @@ class DurableObjectStorage {
       const previousSync = root._activeSyncTransaction;
       root._activeSyncTransaction = view;
       try {
-        // 与 workerd 一致，业务 callback 不接收事务参数。
         const value = f();
         if (control.terminated[0]) throw new Error("Cannot commit a terminated transaction");
         if (!control.rolledBack) {

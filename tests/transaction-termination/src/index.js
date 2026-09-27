@@ -6,7 +6,7 @@ export class TransactionCell {
   facet() {
     return this.state.facets.get("counter", () => ({
       class: this.env.LOADER.get("transaction-facet", () => ({
-        mainModule: "facet.js", globalOutbound: null,
+        mainModule: "facet.js", compatibilityDate: "2025-03-01", globalOutbound: null,
         modules: { "facet.js": `
           import { DurableObject } from "cloudflare:workers";
           export class Counter extends DurableObject {
@@ -41,6 +41,7 @@ export class TransactionCell {
       return this.facet().fetch(new Request("http://facet/read"));
     } else if (path === "/terminate-facet") {
       await storage.transaction(async () => {
+        write("facet-parent-uncommitted");
         const result = await this.facet().fetch(new Request("http://facet/write"));
         if (result.status !== 200 || (await result.json()).n !== 1) throw Error("facet 写入失败");
         storage.transactionSync(() => spin());
@@ -50,7 +51,7 @@ export class TransactionCell {
     } else if (path === "/ordinary-throw") {
       const error = new Error("ordinary");
       try {
-        storage.transactionSync(tx => {
+        storage.transactionSync(() => { const tx = storage;
           write("rollback");
           tx.put("pending", "discard");
           throw error;
@@ -58,15 +59,18 @@ export class TransactionCell {
         throw new Error("应抛出原始错误");
       } catch (e) { if (e !== error) throw e; }
     } else if (path === "/return-value") {
+      storage.transactionSync(function () {
+        if (arguments.length !== 0) throw Error("同步事务 callback 必须无参");
+      });
       const value = {};
       if (storage.transactionSync(() => value) !== value) throw Error("返回值应原样保留");
       if (storage.transactionSync(() => Promise.resolve(1)) instanceof Promise === false) throw Error("同步事务不得等待 Promise");
     } else if (path === "/nested") {
-      storage.transactionSync(tx => {
+      storage.transactionSync(() => { const tx = storage;
         tx.sql.exec("INSERT INTO entries VALUES ('outer')").toArray();
         tx.put("baseline", "parent-pending");
         try {
-          tx.transactionSync(inner => {
+          tx.transactionSync(() => { const inner = storage;
             inner.sql.exec("INSERT INTO entries VALUES ('inner')").toArray();
             inner.put("baseline", "child-pending");
             throw Error("inner");
@@ -76,6 +80,16 @@ export class TransactionCell {
         tx.kv.put("baseline", "keep");
         tx.sql.exec("DELETE FROM entries WHERE v='outer'").toArray();
       });
+    } else if (path === "/nested-outer-throw") {
+      const error = new Error("outer");
+      try {
+        storage.transactionSync(() => {
+          write("outer");
+          storage.transactionSync(() => write("inner"));
+          throw error;
+        });
+        throw Error("外层事务应失败");
+      } catch (caught) { if (caught !== error) throw caught; }
     } else if (path === "/reentrant-root") {
       await storage.transaction(async outer => {
         outer.sql.exec("INSERT INTO entries VALUES ('outer')").toArray();
@@ -86,14 +100,14 @@ export class TransactionCell {
             throw Error("inner");
           });
         } catch (error) { if (error.message !== "inner") throw error; }
-        storage.transactionSync(inner => {
+        storage.transactionSync(() => { const inner = storage;
           const rows = inner.sql.exec("SELECT v FROM entries ORDER BY rowid").toArray().map(row => row.v);
           if (JSON.stringify(rows) !== JSON.stringify(["committed", "outer"])) throw Error("根句柄重入必须使用父事务视图");
           inner.sql.exec("DELETE FROM entries WHERE v='outer'").toArray();
         });
       });
     } else if (path === "/explicit-rollback") {
-      storage.transactionSync(tx => { tx.sql.exec("INSERT INTO entries VALUES ('rollback')").toArray(); tx.rollback(); });
+      await storage.transaction(async tx => { tx.sql.exec("INSERT INTO entries VALUES ('rollback')").toArray(); tx.rollback(); });
     } else if (path === "/abort-outside") {
       this.state.abort("abort outside transaction");
     } else if (path === "/slow-async") {
@@ -124,13 +138,13 @@ export class TransactionCell {
       if (path === "/terminate-parent-pending") storage.put("baseline", "parent-pending");
       if (path === "/terminate-async" || path === "/terminate-root-sync") {
         await storage.transaction(async tx => {
+          this.leaked = tx;
           tx.sql.exec("INSERT INTO entries VALUES ('async-parent')").toArray();
           const target = path === "/terminate-root-sync" ? storage : tx;
-          target.transactionSync(inner => { inner.sql.exec("INSERT INTO entries VALUES ('inner')").toArray(); spin(); });
+          target.transactionSync(() => { const inner = target; inner.sql.exec("INSERT INTO entries VALUES ('inner')").toArray(); spin(); });
         });
       } else {
-        storage.transactionSync(tx => {
-          this.leaked = tx;
+        storage.transactionSync(() => { const tx = storage;
           tx.sql.exec("INSERT INTO entries VALUES ('uncommitted')").toArray();
           tx.kv.put("flushed", "discard");
           tx.setAlarm(Date.now() + 3_600_000);
@@ -138,7 +152,7 @@ export class TransactionCell {
           tx.put("pending", "discard");
           if (path === "/terminate-abort") this.state.abort("abort in transaction");
           if (path === "/terminate-nested") {
-            tx.transactionSync(inner => { inner.sql.exec("INSERT INTO entries VALUES ('nested')").toArray(); spin(); });
+            tx.transactionSync(() => { const inner = storage; inner.sql.exec("INSERT INTO entries VALUES ('nested')").toArray(); spin(); });
           } else if (path === "/terminate-cursor") {
             const c = tx.sql.exec("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000000) SELECT x FROM n");
             this.cursor = c;
