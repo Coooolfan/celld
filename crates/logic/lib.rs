@@ -1470,6 +1470,10 @@ impl State {
                         | Phase::Restoring { .. }
                         | Phase::Starting { .. }
                         | Phase::Publishing { .. }
+                        | Phase::Cleaning {
+                            cause: StopCause::StartFailed,
+                            ..
+                        }
                         | Phase::Fenced
                 )
             {
@@ -4743,7 +4747,7 @@ impl State {
             op,
             |cell| matches!(cell.phase, Phase::Starting { op: current, .. } if current == op),
         ) else {
-            self.compensate_retired_runtime(op, result, effects);
+            self.compensate_retired_runtime(op, effects);
             return;
         };
         self.timed_out_runtime_starts.remove(&op);
@@ -4751,7 +4755,6 @@ impl State {
         let Phase::Starting { epoch, .. } = cell.phase else {
             unreachable!()
         };
-        let mut resume_failed = false;
         match result {
             Ok(()) => {
                 cell.isolate = isolate;
@@ -4769,15 +4772,27 @@ impl State {
                 });
             }
             Err(_) => {
-                set_phase(&mut self.occupied, &mut cell, Phase::Dormant { epoch });
-                self.finish_requests(&id, &mut cell, Err(RequestError::RuntimeFailed), effects);
-                resume_failed = cell.resume_demand;
+                // Restore 已创建副本；失败的 StartRuntime 也必须等待资源释放。
+                let next = self.cell_op(&id);
+                set_phase(
+                    &mut self.occupied,
+                    &mut cell,
+                    Phase::Cleaning {
+                        op: next,
+                        epoch,
+                        cause: StopCause::StartFailed,
+                    },
+                );
+                effects.push(Effect::StopRuntime {
+                    op: next,
+                    cell: id.clone(),
+                    epoch,
+                    cause: StopCause::StartFailed,
+                    bounded: false,
+                });
             }
         }
-        self.cells.insert(id.clone(), cell);
-        if resume_failed {
-            self.settle_local_resume(&id);
-        }
+        self.cells.insert(id, cell);
         self.pump_capacity(effects);
     }
 
@@ -4810,7 +4825,7 @@ impl State {
             op,
             |cell| matches!(cell.phase, Phase::Publishing { op: current, .. } if current == op),
         ) else {
-            self.compensate_retired_runtime(op, result, effects);
+            self.compensate_retired_runtime(op, effects);
             return;
         };
         let mut cell = self.cells.remove(&id).expect("cell found above");
@@ -5010,7 +5025,12 @@ impl State {
             // after the next activation.
             self.finish_eviction(op, Ok(EvictSuccess::Evicted), effects);
         }
+        let resume_failed = cause == StopCause::StartFailed && cell.resume_demand;
         match cause {
+            StopCause::StartFailed => {
+                set_phase(&mut self.occupied, &mut cell, Phase::Dormant { epoch });
+                self.finish_requests(&id, &mut cell, Err(RequestError::RuntimeFailed), effects);
+            }
             StopCause::Cleanup => {
                 set_phase(&mut self.occupied, &mut cell, Phase::Dormant { epoch });
                 self.finish_requests(&id, &mut cell, Err(RequestError::PublishFailed), effects);
@@ -5087,7 +5107,10 @@ impl State {
             }
             StopCause::Fence => unreachable!("fenced cells do not wait for runtime shutdown"),
         }
-        self.cells.insert(id, cell);
+        self.cells.insert(id.clone(), cell);
+        if resume_failed {
+            self.settle_local_resume(&id);
+        }
         self.pump_capacity(effects);
         self.shed_toward_floor(effects);
         // The permit this stop returned is spent here, not on the next load
@@ -6574,32 +6597,24 @@ impl State {
         }
     }
 
-    fn compensate_retired_runtime(
-        &mut self,
-        op: OpId,
-        result: Result<(), Failure>,
-        effects: &mut Vec<Effect>,
-    ) {
+    fn compensate_retired_runtime(&mut self, op: OpId, effects: &mut Vec<Effect>) {
         let Some((cell, epoch)) = self.retired_runtime_ops.remove(&op) else {
             return;
         };
-        // Definite failure created nothing. Success or ambiguity may have
-        // created/published a runtime after authority was revoked, so cleanup
-        // is mandatory and idempotent.
-        if result != Err(Failure::Definite) {
-            let cleanup = self.op();
-            effects.push(Effect::StopRuntime {
-                op: cleanup,
-                cell,
-                epoch,
-                // This completion lost node authority before it became
-                // visible. It can close the database, but it cannot run the
-                // durability pass that an ordinary live cleanup uses to make
-                // the image a successor-epoch base.
-                cause: StopCause::Fence,
-                bounded: false,
-            });
-        }
+        // 即使启动明确失败，Restore 也可能已打开数据库。失去所有权后只关闭，
+        // 不进行持久化确认，也不生成可供后继 epoch 复用的缓存。
+        let cleanup = self.op();
+        effects.push(Effect::StopRuntime {
+            op: cleanup,
+            cell,
+            epoch,
+            // This completion lost node authority before it became
+            // visible. It can close the database, but it cannot run the
+            // durability pass that an ordinary live cleanup uses to make
+            // the image a successor-epoch base.
+            cause: StopCause::Fence,
+            bounded: false,
+        });
     }
 }
 
@@ -7017,3 +7032,7 @@ fn runtime_epoch(phase: &Phase) -> Option<Epoch> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/failed-activation/state.rs"]
+mod failed_activation_tests;

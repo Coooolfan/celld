@@ -1771,6 +1771,10 @@ impl LtxRepl {
             info!(cell, epoch, "resumed clean local replica");
         } else if let Some(snapshot) = local_snapshot {
             self.ltx_host.rename(&snapshot, &dst)?;
+            // 已消费的 epoch 只删除空目录，不能递归删除并发创建的文件。
+            if let Some(parent) = snapshot.parent() {
+                let _ = self.ltx_host.filesystem().remove_dir(parent);
+            }
             self.preserved
                 .lock()
                 .expect("preserved cache poisoned")
@@ -3011,6 +3015,9 @@ impl LtxRepl {
         let _ = self.ltx_host.remove_dir_all(&Db::meta_path_for_path(&db));
         if !preserve_local {
             let _ = self.ltx_host.remove_file(&db);
+        }
+        if let Some(parent) = db.parent() {
+            let _ = self.ltx_host.filesystem().remove_dir(parent);
         }
     }
 

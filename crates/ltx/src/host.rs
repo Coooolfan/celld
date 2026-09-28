@@ -93,6 +93,10 @@ pub trait FileSystem: Send + Sync {
     fn sync_all(&self, path: &Path) -> io::Result<()>;
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn remove_file(&self, path: &Path) -> io::Result<()>;
+    /// 仅原子删除空目录；未提供此能力的文件系统保留空目录。
+    fn remove_dir(&self, _path: &Path) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "remove_dir"))
+    }
     fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
     fn create_dir_all(&self, path: &Path) -> io::Result<()>;
 }
@@ -212,6 +216,10 @@ impl FileSystem for DirectFileSystem {
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_file(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_dir(path)
     }
 
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {

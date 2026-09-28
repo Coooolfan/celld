@@ -3968,7 +3968,9 @@ impl Actor {
                             preserve_local: !rebalance,
                             abandon,
                         },
-                        StopCause::Cleanup => crate::runtime::StopMode::Rebase,
+                        StopCause::Cleanup | StopCause::StartFailed => {
+                            crate::runtime::StopMode::Rebase
+                        }
                         StopCause::Fence => crate::runtime::StopMode::CloseInPlace,
                         StopCause::Reset => crate::runtime::StopMode::Discard,
                         StopCause::Swap => unreachable!("generation swaps return above"),

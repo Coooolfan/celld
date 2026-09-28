@@ -1272,6 +1272,8 @@ pub struct LocalCell {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopCause {
     Cleanup,
+    /// 启动失败后关闭 Restore 已经打开的副本，保留可恢复数据。
+    StartFailed,
     /// `rebalance` means this eviction hands the cell to the fleet: its
     /// ownership record is released and the local replica is not worth
     /// keeping. An idle eviction is the opposite on both counts -- it
