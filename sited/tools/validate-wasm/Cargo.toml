@@ -1,0 +1,12 @@
+[package]
+name = "validate-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasmparser = "0.240"
+
+[dev-dependencies]
+wat = "1.240"
+
+[workspace]

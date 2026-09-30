@@ -1,0 +1,16 @@
+{
+  "name": "agent-platform",
+  "main": "src/index.js",
+  "compatibility_date": "2025-03-01",
+  "vars": {
+    "CELLD_OPENAPI_TOKEN": ""
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BIZ",
+        "class_name": "BizDataCell"
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "host-api"
+version = "0.3.0"
+edition = "2021"
+
+# SDK 作为 rlib 链接；export_abi! 在业务 cdylib 中生成 ABI 导出。
+
+[dependencies]
+serde_json = { version = "1.0.151", default-features = false, features = ["alloc", "float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+
+[workspace]
