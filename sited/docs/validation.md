@@ -4,6 +4,7 @@
 
 ```bash
 bash test/build.sh
+node test/config.mjs
 node test/sql.mjs
 node test/abi-harness.mjs
 node test/cell.mjs

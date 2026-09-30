@@ -51,7 +51,16 @@ bash test/build.sh
 
 `wrangler.jsonc` 声明 `BIZ` Durable Object 绑定与管理接口 Token。配置 `vars.CELLD_OPENAPI_TOKEN` 后，管理请求使用 `Authorization: Bearer <token>`；空 Token 禁用管理接口。
 
-路由根域名由 `src/index.js` 的 `ROOT_DOMAIN` 定义，业务入口为 `{bizId}.{ROOT_DOMAIN}`。模块下载地址通过 `vars.WASM_BASE` 配置，未设置时使用 `src/cell.js` 的默认地址。部署前按实际环境设置域名、模块地址和 Token。
+在 `wrangler.jsonc` 的 `vars` 中配置 `ROOT_DOMAIN` 与 `WASM_BASE`，两者均无默认地址：
+
+```json
+{
+  "ROOT_DOMAIN": "apps.example.com",
+  "WASM_BASE": "https://modules.example.com/wasm-modules"
+}
+```
+
+`ROOT_DOMAIN` 为不含协议、端口和路径的根域名，业务入口为 `{bizId}.{ROOT_DOMAIN}`。`WASM_BASE` 为模块目录的 HTTP(S) URL，可含端口和路径，不允许凭据、query 或 fragment；末尾斜杠可省略。根域名缺失或无效时入口返回 503；模块地址缺失或无效时模块加载失败。
 
 模块默认路径为 `{WASM_BASE}/{bizId}.wasm`。将构建后的模块上传到该位置，或通过管理接口指定模块对象：
 

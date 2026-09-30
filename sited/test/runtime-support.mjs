@@ -33,14 +33,16 @@ export async function runtime(binary, { main, modules = new Map(), idle = 300, t
     res.end(req.method === "HEAD" ? undefined : bytes);
   });
   await new Promise((yes, no) => { store.once("error", no); store.listen(0, "127.0.0.1", yes); });
-  const cellPath = join(dir, "src/cell.js");
-  await writeFile(cellPath, (await readFile(cellPath, "utf8")).replace(
-    "http://100.home.coooolfan.com:9000/wasm-modules", `http://127.0.0.1:${store.address().port}`));
+  const configPath = join(dir, "wrangler.jsonc");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.vars.ROOT_DOMAIN = "platform.test";
+  config.vars.WASM_BASE = `http://127.0.0.1:${store.address().port}`;
+  await writeFile(configPath, JSON.stringify(config));
   const port = await freePort();
   let child, log, generation = 0;
   const request = (biz, path = "/", method = "GET", body, headers = {}) => new Promise((yes, no) => {
     const req = httpRequest({ hostname: "127.0.0.1", port, path, method,
-      headers: { host: `${biz ? biz + "." : ""}100.home.coooolfan.com`, ...headers } }, res => {
+      headers: { host: `${biz ? biz + "." : ""}platform.test`, ...headers } }, res => {
       const chunks = [];
       res.on("data", b => chunks.push(b));
       res.on("end", () => yes({ status: res.statusCode, body: Buffer.concat(chunks).toString(), headers: res.headers }));

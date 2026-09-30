@@ -8,7 +8,6 @@ import { BizDataCell } from "./cell.js";
 // 导出的类名与 wrangler.jsonc 中的 class_name 对应。
 export { BizDataCell };
 
-const ROOT_DOMAIN = "100.home.coooolfan.com";
 const OPENAPI_TOKEN = "CELLD_OPENAPI_TOKEN";
 
 function unauthorized() {
@@ -32,12 +31,16 @@ function innerRequest(req, path) {
 
 export default {
   async fetch(req, env) {
+    const rootDomain = typeof env?.ROOT_DOMAIN === "string" ? env.ROOT_DOMAIN.trim().toLowerCase().replace(/\.$/, "") : "";
+    if (rootDomain.length > 253 || !rootDomain.split(".").every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) {
+      return new Response("ROOT_DOMAIN must be configured as a hostname", { status: 503 });
+    }
     const url = new URL(req.url);
-    const host = (req.headers.get("host") || url.hostname).split(":")[0];
+    const host = (req.headers.get("host") || url.hostname).split(":")[0].toLowerCase().replace(/\.$/, "");
 
     let subdomain = null;
-    if (host.endsWith("." + ROOT_DOMAIN)) {
-      subdomain = host.slice(0, -("." + ROOT_DOMAIN).length);
+    if (host.endsWith("." + rootDomain)) {
+      subdomain = host.slice(0, -("." + rootDomain).length);
       if (subdomain.includes(".")) {
         subdomain = subdomain.split(".")[0];
       }
@@ -57,7 +60,7 @@ export default {
 
     if (url.pathname === "/") {
       return new Response(
-        `celld agent-platform\n\n业务入口：{bizId}.${ROOT_DOMAIN}\n`,
+        `celld agent-platform\n\n业务入口：{bizId}.${rootDomain}\n`,
         { headers: { "content-type": "text/plain;charset=utf-8" } },
       );
     }

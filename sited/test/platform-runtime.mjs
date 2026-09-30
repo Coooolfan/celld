@@ -99,7 +99,7 @@ try {
   const received=new Promise(yes=>{complete=yes;});
   const proxy=createServer((req,res)=>{
     upstreamCalls++;
-    const upstream=httpRequest({hostname:"127.0.0.1",port:r.port,path:"/sql",method:"POST",headers:{host:"probe.100.home.coooolfan.com"}}, reply=>{
+    const upstream=httpRequest({hostname:"127.0.0.1",port:r.port,path:"/sql",method:"POST",headers:{host:"probe.platform.test"}}, reply=>{
       const chunks=[];reply.on("data",b=>chunks.push(b));
       reply.on("end",()=>{complete({status:reply.statusCode,body:Buffer.concat(chunks).toString()});res.destroy();});
       reply.on("error",e=>{complete({error:e.message});res.destroy();});

@@ -1,11 +1,17 @@
 // 每业务一个 DO：模块缓存、可信事件分发和调用生命周期。
 import { createRuntime, httpInput, invoke, InputError, readLimitedBody, LIMITS } from "./host-api.js";
-export const WASM_BASE = "http://100.home.coooolfan.com:9000/wasm-modules";
 const MODULE_CONFIG = "__celld_module";
 class ModuleMissingError extends Error {}
 const validModule = value => typeof value === "string" && value.startsWith("wasm-modules/") && !value.includes("..") && !value.includes("\\") && !value.endsWith("/");
 const json = (status, value) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
-const wasmBase = env => (typeof env?.WASM_BASE === "string" && env.WASM_BASE) || WASM_BASE;
+const wasmBase = env => {
+  let url;
+  try { url = new URL(typeof env?.WASM_BASE === "string" ? env.WASM_BASE.trim() : ""); } catch { throw new Error("WASM_BASE must be configured as an HTTP(S) URL"); }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("WASM_BASE must be an HTTP(S) URL without credentials, query or fragment");
+  }
+  return url.href.replace(/\/+$/, "");
+};
 
 export class BizDataCell {
   constructor(state, env) { this.state = state; this.env = env; this.runtime = null; this.loading = null; this.loadingPhase = "idle"; this.lastError = null; }
