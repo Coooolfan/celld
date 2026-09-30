@@ -1,5 +1,7 @@
 # celld
 
+[本 fork 与上游的差异](docs/fork-differences.md)：`sited` 分支基于上游 v0.6.0 的改动、配置与回归范围。
+
 Self-hosted, distributed **Durable Objects**.
 
 celld is an open-source daemon that runs a Cloudflare Workers application

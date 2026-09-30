@@ -1,5 +1,7 @@
 # celld
 
+[本 fork 与上游的差异](fork-differences.md)：`sited` 分支的同步 turn 看门狗、事务终止收尾与失败激活清理。
+
 celld is a stateful distributed system. It runs server-side JavaScript on
 your machines, and it stores the long-term state in a bucket that you own:
 S3-compatible, Google Cloud Storage, or Azure Blob Storage. The JavaScript
