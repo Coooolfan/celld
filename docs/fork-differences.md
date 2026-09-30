@@ -1,6 +1,6 @@
 # 本 fork 与上游的差异
 
-本 fork 在上游 celld v0.6.0 上增加同步 turn 超时保护、可配置的 isolate cell 上限、同步事务硬终止收尾，以及失败激活时的副本资源清理。本文说明这些改动的行为、边界和对应回归，供使用和同步上游时参考。
+本 fork 在上游 celld v0.6.0 上提供 `sited/` WASM 业务平台，并增加同步 turn 超时保护、可配置的 isolate cell 上限、同步事务硬终止收尾，以及失败激活时的副本资源清理。本文统一追踪相对上游基线的有效差异，说明行为、边界、实现入口与验证范围。
 
 ## 比较范围
 
@@ -10,11 +10,28 @@
 | fork 仓库 | [Coooolfan/celld](https://github.com/Coooolfan/celld) |
 | fork 分支 | `sited` |
 | 上游版本 | `v0.6.0`，`bad4649d01f0db84cdc9093527e72e64ca7a14bf` |
-| fork 代码快照 | `d1de1028ff7fa6b784bb4902ff072c29e6d8cc67` |
+| fork 比较对象 | 当前检出的 fork 代码；精确版本使用 `git rev-parse HEAD` 获取 |
 
-本文比较上游 v0.6.0 与 fork 代码快照 `d1de102`，差异以 `git diff v0.6.0 d1de102` 为准。
+本文比较固定上游基线 v0.6.0 与本 fork，不用于比较上游其他版本。下列 runtime 改动与平台层能力共同构成 fork 的差异。
 
-## 行为差异概览
+## sited 平台层
+
+`sited/` 是 fork 新增的业务平台，不修改 celld 的通用部署与持久化协议。它使用上游 Durable Objects、SQLite 和 alarm 构建独立业务运行单元，核心目标为以业务为单位横向扩容、数据持久化、空闲实例释放、业务隔离与独立发版。
+
+| 能力 | fork 提供的行为 | 实现与规范 |
+| --- | --- | --- |
+| 业务路由与状态单元 | `{bizId}.{ROOT_DOMAIN}` 定位独立 BizDataCell；每业务一个数据库和 WASM runtime | [index.js](../sited/src/index.js)、[cell.js](../sited/src/cell.js) |
+| 部署配置 | 显式配置 `ROOT_DOMAIN`、`WASM_BASE`，无环境地址默认值；空管理 Token 禁用管理接口 | [sited 配置](../sited/README.md#配置与模块发布) |
+| host-api | `celld_v3` imports 提供当前业务的 SQL、日志、时间与 alarm 意图；包含 Rust SDK | [Host ABI](../sited/docs/host-abi-spec.md)、[SDK](../sited/sdk/host-api/src/lib.rs) |
+| admin-api | 模块状态查询与发布；发布校验大小、哈希并保存配置，下次事件加载新实例 | [Admin API](../sited/docs/admin-api.md) |
+| 模块校验与执行边界 | 静态校验器限制 imports、exports、memory、模块大小和 start section；handler 失败后实例不复用，不立即重放 | [校验器](../sited/tools/validate-wasm/src/main.rs)、[隔离边界](../sited/docs/cpu-isolation.md) |
+| 示例与回归 | echo、upper、vote 展示 HTTP、CRUD、原子 batch 与 alarm；回归验证 ABI、预算、发布和本地恢复 | [示例](../sited/examples/README.md)、[测试说明](../sited/docs/validation.md) |
+
+API 职责见 [API 分层](../sited/docs/api-overview.md)。业务 WASM 的接口能力来自 sited host-api，不等同于可以直接调用全部 celld Worker/DO API。基础设施所有权、跨节点复制与故障恢复仍由 celld 提供。
+
+平台不提供每业务独立进程或完整硬配额、版本注册表、灰度与自动回滚。重新加载模块时不重新核对已保存哈希，正式发布应使用不可变模块路径。平台回归不覆盖多节点故障、OOM、真实磁盘与对象存储故障。
+
+## Runtime 行为差异概览
 
 | 场景 | 上游 v0.6.0 | 本 fork |
 | --- | --- | --- |
@@ -79,6 +96,7 @@ Restore 成功但 StartRuntime 失败时，fork 进入 `Cleaning(StartFailed)`�
 | 同步事务终止 | SQL/KV/alarm 回滚、嵌套和异步父事务、旧句柄/游标失效、邻居事务存活、facet 独立提交、重启恢复 | [tests/transaction-termination](../tests/transaction-termination/README.md) |
 | 失败激活 | 缺失 class 重复启动失败时的 FD/epoch 增长、恢复 class 后数据可读、状态机收尾与 fencing | [tests/failed-activation](../tests/failed-activation/README.md) |
 | V8 终止探针 | 独立线程能否终止死循环，以及终止后 isolate 能否复用 | [terminate_probe.rs](../crates/celld/examples/terminate_probe.rs) |
+| sited 平台 | 配置、Host ABI、SQL、预算、模块发布、实例恢复与业务示例 | [sited 测试](../sited/docs/validation.md) |
 
 各回归文档提供运行命令、断言和适用范围。失败激活回归支持通过 `--expect-leak` 检查存在泄漏的 binary，作为修复效果的对照。
 
@@ -86,7 +104,7 @@ Restore 成功但 StartRuntime 失败时，fork 进入 `Cleaning(StartFailed)`�
 
 ## 与上游保持一致的部分
 
-相对 v0.6.0，fork 没有修改 `Cargo.toml`、`Cargo.lock`、Wrangler 配置结构或数据库/对象存储格式。包版本仍为 `0.6.0`，仅靠版本号无法区分上游 binary 与 fork binary；发布时应同时记录 Git commit 和产物 SHA-256。
+相对 v0.6.0，fork 没有修改仓库根目录 `Cargo.toml`、`Cargo.lock`、celld 的 Wrangler 配置结构或数据库/对象存储格式。sited 的 Rust crates 使用独立 Cargo workspace、manifest 与 lockfile。celld 包版本仍为 `0.6.0`，仅靠版本号无法区分上游 binary 与 fork binary；发布时应同时记录 Git commit 和产物 SHA-256。
 
 fork 沿用上游 v0.6.0 的服务实现、CPU 限额、facet 提交契约和 fleet 恢复协议。部署升级与降级须遵守上游的数据格式和版本兼容约束。
 
@@ -95,9 +113,16 @@ fork 沿用上游 v0.6.0 的服务实现、CPU 限额、facet 提交契约和 fl
 在仓库根目录可复现本文的代码比较：
 
 ```sh
-git merge-base --is-ancestor v0.6.0 d1de102
-git diff --stat v0.6.0 d1de102
-git diff v0.6.0 d1de102 -- crates docs tests
+git rev-parse HEAD
+git merge-base --is-ancestor v0.6.0 HEAD
+git diff --stat v0.6.0 HEAD
+git diff v0.6.0 HEAD -- crates sited docs tests .gitignore
 ```
 
-同步上游时，应更新比较基线、fork 代码快照、行为对照和回归范围，并移除上游已提供的等价能力对应的差异说明。
+上述命令比较已提交代码；检查尚未提交的改动使用 `git diff` 和 `git status --short`。
+
+## 维护约定
+
+新增、修改或移除 fork 特有的行为、接口、配置与限制时，在同一改动中更新本文的对应条目、实现入口与验证范围。本文维护有效差异，不记录开发过程或按提交堆积变更日志。
+
+同步上游时，核对并更新比较基线；上游已提供等价能力的改动不再作为 fork 独有差异列出。数据格式与升级兼容性变化应同时更新运行文档和相关回归。

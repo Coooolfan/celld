@@ -21,6 +21,8 @@ HTTP → Parent Worker → bizId → BIZ.idFromName(bizId)
 
 ## Host API
 
+平台接口分层见 [API 总览](docs/api-overview.md)，业务模块发布与状态查询见 [Admin API](docs/admin-api.md)。
+
 Host imports 使用 `celld_v3` namespace，Rust SDK 位于 `sdk/host-api/`。业务通过 `export_abi!` 导出 HTTP 和 alarm handler。
 
 - SQL 使用参数绑定，支持 Number、TEXT、NULL 和 BLOB；整数精度遵循 JavaScript Number 的 ±(2^53−1) 范围。

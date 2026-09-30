@@ -1,6 +1,6 @@
 # celld
 
-[本 fork 与上游的差异](fork-differences.md)：`sited` 分支的同步 turn 看门狗、事务终止收尾与失败激活清理。
+[本 fork 与上游的差异](fork-differences.md)：sited WASM 业务平台、runtime 改动、配置与验证边界。
 
 celld is a stateful distributed system. It runs server-side JavaScript on
 your machines, and it stores the long-term state in a bucket that you own:
