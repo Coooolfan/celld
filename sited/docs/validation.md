@@ -5,6 +5,7 @@
 ```bash
 bash test/build.sh
 node test/config.mjs
+node test/scope.mjs
 node test/sql.mjs
 node test/abi-harness.mjs
 node test/cell.mjs
@@ -14,6 +15,7 @@ node test/sql-runtime.mjs /absolute/path/to/celld
 node test/sql-tail-runtime.mjs /absolute/path/to/celld
 node test/sql-termination.mjs /absolute/path/to/celld
 node test/module-runtime.mjs /absolute/path/to/celld
+node test/scope-runtime.mjs /absolute/path/to/celld
 node test/examples-runtime.mjs /absolute/path/to/celld
 node test/platform-runtime.mjs /absolute/path/to/celld
 ```
@@ -25,6 +27,7 @@ node test/platform-runtime.mjs /absolute/path/to/celld
 - HTTP/alarm 来源隔离、实例恢复、失败不自动重放和 alarm 幂等。
 - 同步 turn 超时与同步事务硬终止后的数据和连接恢复。
 - 模块加载、发布、管理鉴权与本地存储恢复。
+- SCOPE 查询鉴权、方法限制、无 cell 激活，以及本地 runtime 中 ID 的确定性与重启稳定性。
 - echo 页面原文回显、upper CRUD、vote 投票与 batch 数量边界。
 
 运行时测试启动本地 celld，使用临时存储。`sql-tail-runtime.mjs` 包含 SQL 尾注释兼容性断言；该已知问题会使对应测试失败。

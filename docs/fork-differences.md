@@ -23,7 +23,7 @@
 | 业务路由与状态单元 | `{bizId}.{ROOT_DOMAIN}` 定位独立 BizDataCell；每业务一个数据库和 WASM runtime | [index.js](../sited/src/index.js)、[cell.js](../sited/src/cell.js) |
 | 部署配置 | 显式配置 `ROOT_DOMAIN`、`WASM_BASE`，无环境地址默认值；空管理 Token 禁用管理接口 | [sited 配置](../sited/README.md#配置与模块发布) |
 | host-api | `celld_v3` imports 提供当前业务的 SQL、日志、时间与 alarm 意图；包含 Rust SDK | [Host ABI](../sited/docs/host-abi-spec.md)、[SDK](../sited/sdk/host-api/src/lib.rs) |
-| admin-api | 模块状态查询与发布；发布校验大小、哈希并保存配置，下次事件加载新实例 | [Admin API](../sited/docs/admin-api.md) |
+| admin-api | 不激活 cell 的业务 SCOPE 查询；模块状态查询与发布，发布校验大小、哈希并保存配置，下次事件加载新实例 | [Admin API](../sited/docs/admin-api.md) |
 | 模块校验与执行边界 | 静态校验器限制 imports、exports、memory、模块大小和 start section；handler 失败后实例不复用，不立即重放 | [校验器](../sited/tools/validate-wasm/src/main.rs)、[隔离边界](../sited/docs/cpu-isolation.md) |
 | 示例与回归 | echo、upper、vote 展示 HTTP、CRUD、原子 batch 与 alarm；回归验证 ABI、预算、发布和本地恢复 | [示例](../sited/examples/README.md)、[测试说明](../sited/docs/validation.md) |
 

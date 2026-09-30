@@ -21,7 +21,7 @@ HTTP → Parent Worker → bizId → BIZ.idFromName(bizId)
 
 ## Host API
 
-平台接口分层见 [API 总览](docs/api-overview.md)，业务模块发布与状态查询见 [Admin API](docs/admin-api.md)。
+平台接口分层见 [API 总览](docs/api-overview.md)，业务 SCOPE 查询、模块发布与状态查询见 [Admin API](docs/admin-api.md)。
 
 Host imports 使用 `celld_v3` namespace，Rust SDK 位于 `sdk/host-api/`。业务通过 `export_abi!` 导出 HTTP 和 alarm handler。
 
@@ -68,6 +68,7 @@ bash test/build.sh
 
 | 接口 | 用途 |
 | --- | --- |
+| `GET /__inner__/scope` | 计算 bizId 对应的 celld SCOPE，不激活 cell |
 | `GET /__inner__/status` | 查询业务模块配置、加载状态与错误 |
 | `POST /__inner__/action/publish` | 校验并保存模块配置，下次事件加载新实例 |
 

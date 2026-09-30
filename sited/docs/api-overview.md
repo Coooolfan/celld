@@ -5,7 +5,7 @@ sited 的平台接口分为 host-api 和 admin-api。celld 提供节点、cell�
 | 接口层 | 调用方 | 职责 | 规范 |
 | --- | --- | --- | --- |
 | host-api | 业务 WASM | 当前业务的 SQL、日志、时间和 alarm 调度 | [Host ABI](host-abi-spec.md) |
-| admin-api | 平台管理员、发布工具 | 业务模块配置、发布和状态查询 | [Admin API](admin-api.md) |
+| admin-api | 平台管理员、发布工具 | 业务 SCOPE 查询、模块配置、发布和状态查询 | [Admin API](admin-api.md) |
 | celld 基础设施 API | 平台 JS、基础设施管理员、celld 节点 | cell 定位、持久化、节点健康、部署加载与 fleet 运维 | [运行文档](../../docs/README.md)、[安全边界](../../docs/security.md) |
 
 ## host-api
@@ -31,6 +31,7 @@ admin-api 位于 `https://{bizId}.{ROOT_DOMAIN}`，使用平台管理 Bearer Tok
 
 | 接口 | 功能 |
 | --- | --- |
+| `GET /__inner__/scope` | 计算 bizId 对应的 celld SCOPE，不激活 cell |
 | `GET /__inner__/status` | 查询模块配置、加载状态与最近错误 |
 | `POST /__inner__/action/publish` | 校验并保存模块配置，下次事件加载新实例 |
 

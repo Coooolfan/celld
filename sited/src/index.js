@@ -1,7 +1,7 @@
 // 业务子域名路由与 Token 鉴权。
 // {bizId}.{ROOT_DOMAIN} 映射到 BIZ.idFromName(bizId)。
 // celld 负责 cell 的节点定位和按需激活。
-// 根域名返回平台入口说明；模块管理接口使用 Bearer Token。
+// 根域名返回平台入口说明；管理接口使用 Bearer Token。
 
 import { BizDataCell } from "./cell.js";
 
@@ -47,6 +47,16 @@ export default {
     }
 
     if (subdomain) {
+      if (url.pathname === "/__inner__/scope") {
+        if (!tokenMatches(req, env)) return unauthorized();
+        if (req.method !== "GET") {
+          return new Response("method not allowed", { status: 405, headers: { allow: "GET" } });
+        }
+        const id = env.BIZ.idFromName(subdomain);
+        return new Response(JSON.stringify({ bizId: subdomain, scope: `${BizDataCell.name}:${id.toString()}` }), {
+          headers: { "content-type": "application/json", "cache-control": "no-store" },
+        });
+      }
       const stub = env.BIZ.get(env.BIZ.idFromName(subdomain));
       if (url.pathname === "/__inner__/status" || url.pathname === "/__inner__/action/publish") {
         if (!tokenMatches(req, env)) return unauthorized();

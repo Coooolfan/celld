@@ -1,6 +1,6 @@
 # Admin API
 
-admin-api 用于业务模块发布与状态查询。请求发往业务子域名 `https://{bizId}.{ROOT_DOMAIN}`，路径由平台处理，不进入业务 WASM handler。
+admin-api 用于业务 SCOPE 查询、模块发布与状态查询。请求发往业务子域名 `https://{bizId}.{ROOT_DOMAIN}`，路径由平台处理，不进入业务 WASM handler。
 
 ## 鉴权
 
@@ -13,6 +13,28 @@ Authorization: Bearer <token>
 Token 缺失、不匹配或平台 Token 为空时返回 `401`，正文为 `{"error":"unauthorized"}`。当前 Token 是全平台管理员权限，不支持按业务授权。
 
 `ROOT_DOMAIN` 和 `WASM_BASE` 的配置要求见[配置与模块发布](../README.md#配置与模块发布)。根域名缺失或无效时入口返回 `503`。
+
+## 查询业务 SCOPE
+
+```bash
+curl 'https://echo.<ROOT_DOMAIN>/__inner__/scope' \
+  -H 'Authorization: Bearer <token>'
+```
+
+成功返回 `200 application/json`，并设置 `Cache-Control: no-store`：
+
+```json
+{
+  "bizId": "echo",
+  "scope": "BizDataCell:<64 位小写十六进制 ID>"
+}
+```
+
+平台使用 `env.BIZ.idFromName(bizId)` 计算 ID，再以 `BizDataCell:<ID>` 返回 celld SCOPE。同一 BIZ namespace 和 bizId 的计算结果确定；更换 namespace 或业务标识后不能沿用原 SCOPE。
+
+接口仅支持 GET；鉴权通过后使用其他方法返回 `405` 和 `Allow: GET`。查询不创建 cell stub、不激活业务 cell、不读取数据库或下载 WASM，不要求业务模块存在，也不依赖 `WASM_BASE`。返回值不表示业务已发布、正在运行或属于某个节点。
+
+返回的 SCOPE 可用于 celld 内部 `POST /evict/<SCOPE>`。该操作仅驱逐目标节点上的实例；遍历节点时需检查各节点响应，对暂时无法驱逐的实例重试。查询 SCOPE 与驱逐都不阻止后续请求重新激活业务。
 
 ## 查询模块状态
 
@@ -77,4 +99,4 @@ Content-Type: application/json
 
 ## 接口范围
 
-当前仅提供上述两个接口。其他 `/__inner__/` 路径返回 `404`；公开业务路径不能触发 alarm 或 dispose。celld 的节点健康、部署 reload、shutdown、cell 操作与复制协议属于[基础设施 API](api-overview.md)，不使用本接口的 Token。
+当前仅提供上述三个接口。其他 `/__inner__/` 路径返回 `404`；公开业务路径不能触发 alarm 或 dispose。celld 的节点健康、部署 reload、shutdown、cell 操作与复制协议属于[基础设施 API](api-overview.md)，不使用本接口的 Token。
